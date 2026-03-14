@@ -1,9 +1,0 @@
-Це те, що буде підтягувати UI для списку зліва:
-{
-  "id": "autocode_v1",
-  "name": "Auto Code Detector",
-  "description": "Автоматично зчитує 6-значні коди з екрану та вводить їх.",
-  "version": "1.0.0",
-  "author": "s1spa",
-  "icon": "terminal" 
-}
