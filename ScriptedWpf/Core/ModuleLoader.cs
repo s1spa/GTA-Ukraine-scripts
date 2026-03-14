@@ -41,6 +41,7 @@ public static class ModuleLoader
     static IModule? CreateModule(string id) => id switch
     {
         "cda"     => new Cogs.Cda.CdaModule(),
+        "wires" => new Cogs.Wires.WiresModule(),
         "antiafk" => new Cogs.AntiAfk.AntiAfkModule(),
         _         => null,
     };
