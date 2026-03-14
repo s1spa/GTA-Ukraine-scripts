@@ -6,8 +6,10 @@ using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using ScriptedWpf.Core;
 using ScriptedWpf.Models;
+using ScriptedWpf.Cogs.Cda;
 
 namespace ScriptedWpf;
 
@@ -86,6 +88,29 @@ public partial class MainWindow : Window
                     statusDot.Fill = module.IsRunning
                         ? (Brush)Application.Current.Resources["AccentBrush"]
                         : (Brush)Application.Current.Resources["TextDimBrush"]);
+
+                if (module is CdaModule cda)
+                {
+                    cda.OnFrame += bmp => Dispatcher.Invoke(() =>
+                    {
+                        OcrPreviewBorder.Visibility = Visibility.Visible;
+                        using var ms = new System.IO.MemoryStream();
+                        bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Bmp);
+                        ms.Seek(0, System.IO.SeekOrigin.Begin);
+                        var bi = new BitmapImage();
+                        bi.BeginInit();
+                        bi.CacheOption = BitmapCacheOption.OnLoad;
+                        bi.StreamSource = ms;
+                        bi.EndInit();
+                        bi.Freeze();
+                        OcrPreviewImage.Source = bi;
+                        bmp.Dispose();
+                    });
+                    module.StateChanged += () => Dispatcher.Invoke(() =>
+                    {
+                        if (!module.IsRunning) { OcrPreviewBorder.Visibility = Visibility.Collapsed; OcrPreviewImage.Source = null; }
+                    });
+                }
             }
 
             SidebarPanel.Children.Add(btn);

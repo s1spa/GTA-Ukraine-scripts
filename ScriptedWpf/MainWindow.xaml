@@ -152,6 +152,19 @@
                         </DockPanel>
                     </Border>
 
+                    <!-- OCR preview -->
+                    <Border DockPanel.Dock="Bottom" Background="#0D0D0F"
+                            BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0"
+                            Height="80" Visibility="Collapsed" x:Name="OcrPreviewBorder">
+                        <DockPanel Margin="10,4">
+                            <TextBlock DockPanel.Dock="Left" Text="OCR:" FontSize="9" FontWeight="Bold"
+                                       Foreground="{StaticResource TextDimBrush}"
+                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <Image x:Name="OcrPreviewImage" Stretch="Uniform"
+                                   RenderOptions.BitmapScalingMode="NearestNeighbor"/>
+                        </DockPanel>
+                    </Border>
+
                     <!-- Terminal output -->
                     <RichTextBox x:Name="TerminalBox"
                                  Background="Transparent"

@@ -17,6 +17,9 @@ public sealed class CdaModule : IModule
     Action<string>     _log   = Console.WriteLine;
     CdaConfig          _cfg         = CdaConfig.Load();
     System.Drawing.Rectangle? _codeZone;
+    int _frameCounter;
+
+    public Action<System.Drawing.Bitmap>? OnFrame { get; set; }
 
     // ── IModule ───────────────────────────────────────────────────────────────
     public string Id        => "cda";
@@ -234,7 +237,7 @@ public sealed class CdaModule : IModule
                             var best = valid.OrderByDescending(c => c.PricePerKm).First();
                             _log($"🏆 Найкращий: {best.Type} {best.PricePerKm}$/km — відкриваю...");
                             MouseInput.Click(best.ClickPoint.X, best.ClickPoint.Y);
-                            Thread.Sleep(600);
+                            Thread.Sleep(300);
 
                             var scr  = WinOcr.GetMonitorBounds(_cfg.MonitorIndex);
                             int btnX = scr.X + scr.Width / 2 + (int)(scr.Width * 0.075);
@@ -251,7 +254,7 @@ public sealed class CdaModule : IModule
                             _log("Жодне замовлення не підійшло. Очікую...");
                         }
                     }
-                    Thread.Sleep(1000);
+                    Thread.Sleep(300);
                 }
                 else
                 {
@@ -268,9 +271,8 @@ public sealed class CdaModule : IModule
                         _codeZone = WinOcr.FindDialogRegion(_cfg.MonitorIndex);
                         if (_codeZone != null)
                         {
-                            const int pad = 10;
                             var z = _codeZone.Value;
-                            _codeZone = new System.Drawing.Rectangle(z.X - pad, z.Y - pad, z.Width + pad * 2, z.Height + pad * 2);
+                            _codeZone = new System.Drawing.Rectangle(z.X + 180, z.Y + 5, z.Width - 360, z.Height - 30);
                             _cfg.X = _codeZone.Value.X; _cfg.Y = _codeZone.Value.Y;
                             _cfg.Width = _codeZone.Value.Width; _cfg.Height = _codeZone.Value.Height;
                             _cfg.Save();
@@ -280,7 +282,10 @@ public sealed class CdaModule : IModule
                     if (_codeZone != null)
                     {
                         using var img = ScreenCapture.Capture(_codeZone.Value);
-                        var code = WinOcr.FindCodeAsync(img).GetAwaiter().GetResult();
+                        if (_frameCounter++ % 5 == 0)
+                            OnFrame?.Invoke((System.Drawing.Bitmap)img.Clone());
+                        var (code, rawText) = WinOcr.FindCodeAsync(img).GetAwaiter().GetResult();
+                        _log($"OCR: \"{rawText}\" → {(code ?? "не знайдено")}");
                         if (code != null)
                         {
                             _log($"Знайдено код: {code} — вводжу...");

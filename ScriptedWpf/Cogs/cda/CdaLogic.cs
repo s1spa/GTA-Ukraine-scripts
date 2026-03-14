@@ -97,20 +97,31 @@ static class WinOcr
         return await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
     }
 
-    public static async Task<string?> FindCodeAsync(Bitmap img)
+    static Bitmap Upscale(Bitmap src, int scale)
+    {
+        var dst = new Bitmap(src.Width * scale, src.Height * scale, PixelFormat.Format32bppArgb);
+        using var g = System.Drawing.Graphics.FromImage(dst);
+        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+        g.DrawImage(src, 0, 0, dst.Width, dst.Height);
+        return dst;
+    }
+
+    public static async Task<(string? code, string raw)> FindCodeAsync(Bitmap img)
     {
         using var processed = ScreenCapture.Preprocess(img);
-        using var soft      = await ToSoftwareBitmapAsync(processed);
+        using var upscaled  = Upscale(processed, 3);
+        using var soft      = await ToSoftwareBitmapAsync(upscaled);
         var result = await Engine.RecognizeAsync(soft);
+        string raw = result.Text.Trim();
         // спочатку шукаємо 6 цифр з довільними пробілами між ними
-        var spaced = Regex.Match(result.Text, @"(\d)\s*(\d)\s*(\d)\s*(\d)\s*(\d)\s*(\d)");
+        var spaced = Regex.Match(raw, @"(\d)\s*(\d)\s*(\d)\s*(\d)\s*(\d)\s*(\d)");
         if (spaced.Success)
-            return string.Concat(spaced.Groups[1].Value, spaced.Groups[2].Value,
-                                 spaced.Groups[3].Value, spaced.Groups[4].Value,
-                                 spaced.Groups[5].Value, spaced.Groups[6].Value);
+            return (string.Concat(spaced.Groups[1].Value, spaced.Groups[2].Value,
+                                  spaced.Groups[3].Value, spaced.Groups[4].Value,
+                                  spaced.Groups[5].Value, spaced.Groups[6].Value), raw);
         // fallback: витягуємо всі цифри і беремо перші 6
-        var digits = Regex.Replace(result.Text, @"[^\d]", "");
-        return digits.Length >= 6 ? digits[..6] : null;
+        var digits = Regex.Replace(raw, @"[^\d]", "");
+        return (digits.Length >= 6 ? digits[..6] : null, raw);
     }
 
     public static string TessDataPath => Path.Combine(
@@ -226,7 +237,7 @@ static class WinOcr
         var best = m1.dist < m2.dist ? m1 : m2;
         if (best.dist > 22) return null;
 
-        int w = 600, x = (bmp.Width - w) / 2, y = best.bounds.Y1, h = 80;
+        int w = 600, x = (bmp.Width - w) / 2, y = best.bounds.Y1 + best.bounds.Height, h = 60;
         float sx = (float)bmp.Width / screen.Width, sy = (float)bmp.Height / screen.Height;
         return new Rectangle(screen.X + (int)(x / sx), screen.Y + (int)(y / sy), (int)(w / sx), (int)(h / sy));
     }
@@ -425,9 +436,9 @@ static class MouseInput
     public static void Click(int x, int y)
     {
         WinApi.SetCursorPos(x, y);
-        Thread.Sleep(50);
+        Thread.Sleep(20);
         WinApi.mouse_event(0x0002, 0, 0, 0, 0);
-        Thread.Sleep(50);
+        Thread.Sleep(20);
         WinApi.mouse_event(0x0004, 0, 0, 0, 0);
     }
 }
