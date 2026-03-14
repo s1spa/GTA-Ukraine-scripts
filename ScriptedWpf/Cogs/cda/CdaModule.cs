@@ -101,13 +101,18 @@ public sealed class CdaModule : IModule
             row++;
         }
 
-        // Monitor selector
-        var monCb = new ComboBox { Width = 200, Height = 28 };
+        // Monitor selector — з реальними назвами через DeviceName
+        var monCb = new ComboBox { Width = 220, Height = 28 };
         monCb.Items.Add("Авто");
         var screens = System.Windows.Forms.Screen.AllScreens;
         for (int i = 0; i < screens.Length; i++)
-            monCb.Items.Add($"Монітор {i + 1} ({screens[i].Bounds.Width}x{screens[i].Bounds.Height})");
-        monCb.SelectedIndex = _cfg.MonitorIndex + 1;
+        {
+            string friendly = ScriptedWpf.Core.WinApi.GetMonitorFriendlyName(screens[i].DeviceName);
+            if (string.IsNullOrWhiteSpace(friendly) || friendly == screens[i].DeviceName)
+                friendly = $"Дисплей {i + 1}";
+            monCb.Items.Add($"{friendly}  {screens[i].Bounds.Width}×{screens[i].Bounds.Height}");
+        }
+        monCb.SelectedIndex = Math.Clamp(_cfg.MonitorIndex + 1, 0, monCb.Items.Count - 1);
         monCb.SelectionChanged += (_, _) =>
         {
             _cfg.MonitorIndex = monCb.SelectedIndex - 1;
@@ -117,8 +122,24 @@ public sealed class CdaModule : IModule
         };
         AddRow("Монітор", monCb);
 
-        AddRow("Мін. ціна /km", IntBox(_cfg.MinPrice,  v => { _cfg.MinPrice = v; _cfg.Save(); }));
-        AddRow("Макс. тонн",    DoubleBox(_cfg.MaxTon, v => { _cfg.MaxTon   = v; _cfg.Save(); }));
+        AddRow("Мін. ціна /km", IntBox(_cfg.MinPrice, v => { _cfg.MinPrice = v; _cfg.Save(); }));
+
+        // Макс. тонн — фіксований dropdown
+        var tonCb = new ComboBox { Width = 100, Height = 28 };
+        double[] tonOptions = { 0.5, 1.5, 3.0, 5.0 };
+        foreach (var t in tonOptions)
+            tonCb.Items.Add($"{t:F1} т");
+        int tonIdx = Array.FindIndex(tonOptions, t => Math.Abs(t - _cfg.MaxTon) < 0.01);
+        tonCb.SelectedIndex = tonIdx >= 0 ? tonIdx : tonOptions.Length - 1;
+        tonCb.SelectionChanged += (_, _) =>
+        {
+            if (tonCb.SelectedIndex >= 0)
+            {
+                _cfg.MaxTon = tonOptions[tonCb.SelectedIndex];
+                _cfg.Save();
+            }
+        };
+        AddRow("Макс. тонн", tonCb);
 
         // Types section
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(16) }); row++;
@@ -172,20 +193,6 @@ public sealed class CdaModule : IModule
         return tb;
     }
 
-    static TextBox DoubleBox(double initial, Action<double> onChange)
-    {
-        var tb = MakeTextBox(initial.ToString("F1"));
-        tb.LostFocus += (_, _) =>
-        {
-            if (double.TryParse(tb.Text.Replace(',', '.'),
-                    System.Globalization.NumberStyles.Any,
-                    System.Globalization.CultureInfo.InvariantCulture, out double v))
-                onChange(v);
-            else
-                tb.Text = initial.ToString("F1");
-        };
-        return tb;
-    }
 
     static TextBox MakeTextBox(string text) => new()
     {
@@ -229,9 +236,9 @@ public sealed class CdaModule : IModule
                             MouseInput.Click(best.ClickPoint.X, best.ClickPoint.Y);
                             Thread.Sleep(600);
 
-                            var scr   = WinOcr.GetMonitorBounds(_cfg.MonitorIndex);
-                            int btnX  = scr.X + scr.Width / 2 + (int)(scr.Width * 0.075);
-                            int btnY  = scr.Y + scr.Height / 2 + (int)(scr.Height * 0.16);
+                            var scr  = WinOcr.GetMonitorBounds(_cfg.MonitorIndex);
+                            int btnX = scr.X + scr.Width / 2 + (int)(scr.Width * 0.075);
+                            int btnY = scr.Y + scr.Height / 2 + (int)(scr.Height * 0.16);
                             _log("🖱 Натискаю 'Взяти замовлення'...");
                             MouseInput.Click(btnX, btnY);
 
@@ -261,6 +268,9 @@ public sealed class CdaModule : IModule
                         _codeZone = WinOcr.FindDialogRegion(_cfg.MonitorIndex);
                         if (_codeZone != null)
                         {
+                            const int pad = 10;
+                            var z = _codeZone.Value;
+                            _codeZone = new System.Drawing.Rectangle(z.X - pad, z.Y - pad, z.Width + pad * 2, z.Height + pad * 2);
                             _cfg.X = _codeZone.Value.X; _cfg.Y = _codeZone.Value.Y;
                             _cfg.Width = _codeZone.Value.Width; _cfg.Height = _codeZone.Value.Height;
                             _cfg.Save();

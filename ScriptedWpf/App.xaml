@@ -7,10 +7,14 @@
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
+                <!-- 1. Тема MD -->
                 <materialDesign:BundledTheme BaseTheme="Dark"
                                              PrimaryColor="Green"
                                              SecondaryColor="LightGreen" />
+                <!-- 2. MD стилі (CheckBox тощо) -->
                 <ResourceDictionary Source="pack://application:,,,/MaterialDesignThemes.Wpf;component/Themes/MaterialDesign3.Defaults.xaml" />
+                <!-- 3. Наші стилі — перекривають TextBox/ComboBox від MD -->
+                <ResourceDictionary Source="pack://application:,,,/ScriptedWpf;component/Themes/InputStyles.xaml" />
             </ResourceDictionary.MergedDictionaries>
 
             <SolidColorBrush x:Key="AccentBrush"        Color="#4CFF72"/>
@@ -22,25 +26,9 @@
             <SolidColorBrush x:Key="TextSecondaryBrush" Color="#8888AA"/>
             <SolidColorBrush x:Key="TextDimBrush"       Color="#55556A"/>
 
-            <!-- Інпути: світлий текст на темному фоні -->
-            <Style TargetType="TextBox" BasedOn="{StaticResource MaterialDesignOutlinedTextBox}">
-                <Setter Property="Foreground"        Value="#E8E8F0"/>
-                <Setter Property="Background"        Value="#1A1A24"/>
-                <Setter Property="BorderBrush"       Value="#2A2A38"/>
-                <Setter Property="CaretBrush"        Value="#4CFF72"/>
-                <Setter Property="FontSize"          Value="13"/>
-            </Style>
-
-            <Style TargetType="ComboBox" BasedOn="{StaticResource MaterialDesignOutlinedComboBox}">
-                <Setter Property="Foreground"        Value="#E8E8F0"/>
-                <Setter Property="Background"        Value="#1A1A24"/>
-                <Setter Property="BorderBrush"       Value="#2A2A38"/>
-                <Setter Property="FontSize"          Value="13"/>
-            </Style>
-
             <Style TargetType="CheckBox" BasedOn="{StaticResource MaterialDesignCheckBox}">
-                <Setter Property="Foreground"        Value="#8888AA"/>
-                <Setter Property="FontSize"          Value="13"/>
+                <Setter Property="Foreground"  Value="#8888AA"/>
+                <Setter Property="FontSize"    Value="13"/>
             </Style>
         </ResourceDictionary>
     </Application.Resources>
