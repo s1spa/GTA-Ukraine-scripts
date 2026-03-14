@@ -329,7 +329,7 @@ public sealed class WiresModule : IModule
             {
                 foreach (var s in csO.Wire) samples.Add((s.R, s.G, s.B));
                 foreach (var s in csO.Ring) samples.Add((s.R, s.G, s.B));
-                foreach (var s in csO.Tip)  samples.Add((s.R, s.G, s.B));
+                // Tip зберігає тільки XY (без кольору) — не додаємо до overlay
             }
 
             int w = (int)imgW, h = (int)imgH;
@@ -352,9 +352,9 @@ public sealed class WiresModule : IModule
                 for (int y = 0; y < h; y++)
                 for (int x = 0; x < w; x++)
                 {
-                    bool inZone = (x >= gx1 && x <= gx2 && y >= gy1 && y <= gy2)
-                               || (x >= rtx1 && x <= rtx2 && y >= rty - ringHalfH && y <= rty + ringHalfH)
-                               || (x >= rbx1 && x <= rbx2 && y >= rby - ringHalfH && y <= rby + ringHalfH);
+                    bool inZone = sampleMode == 1
+                        ? (x >= rtx1 && x <= rtx2 && y >= rty && y <= rby)
+                        : (x >= gx1 && x <= gx2 && y >= gy1 && y <= gy2); // Wire та Tip — зона міні-гри
                     if (!inZone) continue;
 
                     int srcIdx = y * imgStride + x * 4;
@@ -367,7 +367,7 @@ public sealed class WiresModule : IModule
                     foreach (var (sr, sg, sb) in samples)
                     {
                         int d = (R - sr) * (R - sr) + (G - sg) * (G - sg) + (B - sb) * (B - sb);
-                        if (d < 3000) { matched = true; break; }
+                        if (d < 75) { matched = true; break; }
                     }
 
                     if (matched)
@@ -938,9 +938,19 @@ public sealed class WiresModule : IModule
                 double xPct = Math.Clamp(pt.X / (imgW * sx), 0, 1);
                 double yPct = Math.Clamp(pt.Y / (imgH * sy), 0, 1);
 
-                int px = Math.Clamp((int)(xPct * (imgW - 1)), 0, (int)imgW - 1);
-                int py = Math.Clamp((int)(yPct * (imgH - 1)), 0, (int)imgH - 1);
-                var pxColor = SampleBitmapPixel(screenshot, px, py);
+                // ── Перевірка зони: Wire/Tip → тільки wireRect, Ring → тільки ringRect ──
+                if (sampleMode == 0 || sampleMode == 2) // Wire or Tip
+                {
+                    bool inWire = xPct >= _cfg.ScanX1 && xPct <= _cfg.ScanX2
+                               && yPct >= _cfg.TopWireY && yPct <= _cfg.BotWireY;
+                    if (!inWire) return;
+                }
+                else // Ring
+                {
+                    bool inRing = xPct >= _cfg.RingTopX1 && xPct <= _cfg.RingTopX2
+                               && yPct >= _cfg.RingTopY  && yPct <= _cfg.RingBotY;
+                    if (!inRing) return;
+                }
 
                 string colorName = activeColor.ToString();
                 if (!_cfg.ColorSamples.ContainsKey(colorName))
@@ -948,18 +958,28 @@ public sealed class WiresModule : IModule
                 var cs = _cfg.ColorSamples[colorName];
                 var lst = sampleMode == 0 ? cs.Wire : sampleMode == 1 ? cs.Ring : cs.Tip;
 
-                var sample = new PixelSample
+                PixelSample sample;
+                System.Windows.Media.Color fill2;
+                var defE = WireColorDefs.FirstOrDefault(d => d.wc == activeColor);
+                var borderCol2 = ParseHexColor(defE.hex != null ? defE.hex : "#888888");
+
+                if (sampleMode == 2) // Tip — тільки XY, без кольору
                 {
-                    R = pxColor.R, G = pxColor.G, B = pxColor.B,
-                    XPct = xPct, YPct = yPct
-                };
+                    sample = new PixelSample { R = 0, G = 0, B = 0, XPct = xPct, YPct = yPct };
+                    fill2 = System.Windows.Media.Color.FromRgb(255, 220, 0); // жовтий маркер
+                }
+                else // Wire або Ring — читаємо точний піксель
+                {
+                    int px = Math.Clamp((int)(xPct * (imgW - 1)), 0, (int)imgW - 1);
+                    int py = Math.Clamp((int)(yPct * (imgH - 1)), 0, (int)imgH - 1);
+                    var pxColor = SampleBitmapPixel(screenshot, px, py);
+                    sample = new PixelSample { R = pxColor.R, G = pxColor.G, B = pxColor.B, XPct = xPct, YPct = yPct };
+                    fill2 = System.Windows.Media.Color.FromRgb(pxColor.R, pxColor.G, pxColor.B);
+                }
+
                 lst.Add(sample);
                 int newIdx = lst.Count - 1;
                 _cfg.Save();
-
-                var defE = WireColorDefs.FirstOrDefault(d => d.wc == activeColor);
-                var borderCol2 = ParseHexColor(defE.hex != null ? defE.hex : "#888888");
-                var fill2 = System.Windows.Media.Color.FromRgb(pxColor.R, pxColor.G, pxColor.B);
 
                 var el = AddDot(xPct, yPct, colorName, sampleMode, newIdx, fill2, borderCol2, cw, ch);
                 dotList.Add((el, colorName, sampleMode, newIdx));
@@ -1225,21 +1245,33 @@ public sealed class WiresModule : IModule
                 var screen = GetScreen();
                 using var bmp = ScreenCapture.Capture(screen);
 
+                // Сканування проводів по кольору (рандомні позиції кожен раунд)
                 var topWires    = WireScanner.FindTopWireTips(bmp, screen, _cfg);
                 var bottomWires = WireScanner.FindBottomWireTips(bmp, screen, _cfg);
+                var allWires    = topWires.Concat(bottomWires).ToList();
+
+                // Сканування кілець
                 var (topRings, bottomRings) = WireScanner.FindRings(bmp, _cfg);
+                var allRings = topRings.Concat(bottomRings).ToList();
 
-                _log($"Знайдено: верх={topWires.Count} [{string.Join(",", topWires.Select(w => w.color))}] | низ={bottomWires.Count} [{string.Join(",", bottomWires.Select(w => w.color))}]");
-                _log($"Кільця: верх={topRings.Count} [{string.Join(",", topRings.Select(r => r.color))}] | низ={bottomRings.Count} [{string.Join(",", bottomRings.Select(r => r.color))}]");
+                _log($"Проводи: верх={topWires.Count} [{string.Join(",", topWires.Select(w => w.color))}] | низ={bottomWires.Count} [{string.Join(",", bottomWires.Select(w => w.color))}]");
+                _log($"Кільця:  верх={topRings.Count} [{string.Join(",", topRings.Select(r => r.color))}] | низ={bottomRings.Count} [{string.Join(",", bottomRings.Select(r => r.color))}]");
 
-                SaveDebugImage(bmp, topWires, bottomWires, topRings, bottomRings, _debugFrame++, _cfg);
+                // Перетворюємо список проводів у словник колір→точка
+                var tipPoints = allWires
+                    .GroupBy(w => w.color)
+                    .ToDictionary(g => g.Key, g => g.First().pos);
 
-                if (topWires.Count == 5 && topRings.Count >= 5 && bottomWires.Count == 5 && bottomRings.Count >= 5)
+                SaveDebugImage(bmp, tipPoints, topRings, bottomRings, _debugFrame++, _cfg);
+
+                // Готово якщо знайдено 10 проводів і 10 кілець без дублікатів
+                bool wiresReady = tipPoints.Count == 10;
+                bool ringsReady = allRings.Count >= 10 || tipPoints.Keys.All(wc => allRings.Any(r => r.color == wc));
+
+                if (wiresReady && ringsReady)
                 {
                     _log("Починаю з'єднання...");
-                    ConnectWires(topWires, topRings, screen, isTop: true);
-                    Thread.Sleep(200);
-                    ConnectWires(bottomWires, bottomRings, screen, isTop: false);
+                    ConnectWires(tipPoints, allRings, screen);
                     _log("Готово! 🔌");
                     _state = BotState.Idle;
                     StateChanged?.Invoke();
@@ -1258,25 +1290,19 @@ public sealed class WiresModule : IModule
     }
 
     void ConnectWires(
-        List<(System.Drawing.Point pos, WireColor color)> wires,
+        Dictionary<WireColor, System.Drawing.Point> tipPoints,
         List<(System.Drawing.Point center, WireColor color)> rings,
-        System.Drawing.Rectangle screen,
-        bool isTop)
+        System.Drawing.Rectangle screen)
     {
-        foreach (var (wirePos, wireColor) in wires)
+        foreach (var (wireColor, tipPt) in tipPoints)
         {
-            if (wireColor == WireColor.Unknown) { _log($"⚠ Провід невідомого кольору на X={wirePos.X}"); continue; }
-
             var ringMatch = rings.Find(r => r.color == wireColor);
             if (ringMatch.center == default) { _log($"⚠ Кільце для {wireColor} не знайдено"); continue; }
 
-            float sx = (float)screen.Width  / GetBmpWidth(screen);
-            float sy = (float)screen.Height / GetBmpHeight(screen);
-
-            int fromX = screen.X + (int)(wirePos.X        * sx);
-            int fromY = screen.Y + (int)(wirePos.Y        * sy);
-            int toX   = screen.X + (int)(ringMatch.center.X * sx);
-            int toY   = screen.Y + (int)(ringMatch.center.Y * sy);
+            int fromX = screen.X + tipPt.X;
+            int fromY = screen.Y + tipPt.Y;
+            int toX   = screen.X + ringMatch.center.X;
+            int toY   = screen.Y + ringMatch.center.Y;
 
             _log($"🔌 {wireColor}: ({fromX},{fromY}) → ({toX},{toY})");
             DragInput.Drag(fromX, fromY, toX, toY, _log);
@@ -1291,13 +1317,9 @@ public sealed class WiresModule : IModule
         return System.Windows.Forms.Screen.PrimaryScreen!.Bounds;
     }
 
-    static int GetBmpWidth(System.Drawing.Rectangle screen)  => screen.Width;
-    static int GetBmpHeight(System.Drawing.Rectangle screen) => screen.Height;
-
     static void SaveDebugImage(
         Bitmap bmp,
-        List<(System.Drawing.Point pos, WireColor color)> topWires,
-        List<(System.Drawing.Point pos, WireColor color)> bottomWires,
+        Dictionary<WireColor, System.Drawing.Point> tipPoints,
         List<(System.Drawing.Point center, WireColor color)> topRings,
         List<(System.Drawing.Point center, WireColor color)> bottomRings,
         int frame, WiresConfig cfg)
@@ -1307,35 +1329,17 @@ public sealed class WiresModule : IModule
             using var dbg = (Bitmap)bmp.Clone();
             using var g   = System.Drawing.Graphics.FromImage(dbg);
 
-            int scanTopY = (int)(bmp.Height * cfg.TopWireY);
-            int scanBotY = (int)(bmp.Height * cfg.BotWireY);
-            int scanX1   = (int)(bmp.Width  * cfg.ScanX1);
-            int scanX2   = (int)(bmp.Width  * cfg.ScanX2);
             int ringTopY = (int)(bmp.Height * cfg.RingTopY);
             int ringBotY = (int)(bmp.Height * cfg.RingBotY);
 
-            var penTop  = new System.Drawing.Pen(System.Drawing.Color.FromArgb(220, System.Drawing.Color.OrangeRed), 2);
-            var penBot  = new System.Drawing.Pen(System.Drawing.Color.FromArgb(220, System.Drawing.Color.DodgerBlue), 2);
-            var penX    = new System.Drawing.Pen(System.Drawing.Color.FromArgb(180, System.Drawing.Color.White), 1);
             var penRing = new System.Drawing.Pen(System.Drawing.Color.FromArgb(220, System.Drawing.Color.MediumPurple), 2);
-
-            g.DrawLine(penTop,  0, scanTopY, bmp.Width, scanTopY);
-            g.DrawLine(penBot,  0, scanBotY, bmp.Width, scanBotY);
-            g.DrawLine(penX,    scanX1, 0, scanX1, bmp.Height);
-            g.DrawLine(penX,    scanX2, 0, scanX2, bmp.Height);
             g.DrawLine(penRing, 0, ringTopY, bmp.Width, ringTopY);
             g.DrawLine(penRing, 0, ringBotY, bmp.Width, ringBotY);
 
-            foreach (var (pos, col) in topWires)
+            foreach (var (col, pos) in tipPoints)
             {
-                DrawCross(g, pos, System.Drawing.Color.Red, 10);
-                g.DrawString(col.ToString(), new System.Drawing.Font("Arial", 8), System.Drawing.Brushes.Red, pos.X + 4, pos.Y - 14);
-            }
-
-            foreach (var (pos, col) in bottomWires)
-            {
-                DrawCross(g, pos, System.Drawing.Color.Blue, 10);
-                g.DrawString(col.ToString(), new System.Drawing.Font("Arial", 8), System.Drawing.Brushes.Cyan, pos.X + 4, pos.Y + 4);
+                DrawCross(g, pos, System.Drawing.Color.Orange, 10);
+                g.DrawString(col.ToString(), new System.Drawing.Font("Arial", 8), System.Drawing.Brushes.Orange, pos.X + 4, pos.Y - 14);
             }
 
             foreach (var (center, col) in topRings)
@@ -1357,30 +1361,15 @@ public sealed class WiresModule : IModule
 
             var sb = new System.Text.StringBuilder();
             sb.AppendLine($"=== frame {frame} ===");
-            sb.AppendLine("TOP WIRES:");
-            foreach (var (pos, col) in topWires)
-            {
-                var px = bmp.GetPixel(pos.X, pos.Y);
-                sb.AppendLine($"  {col} @ ({pos.X},{pos.Y}) RGB=({px.R},{px.G},{px.B}) #{px.R:X2}{px.G:X2}{px.B:X2}");
-            }
-            sb.AppendLine("BOTTOM WIRES:");
-            foreach (var (pos, col) in bottomWires)
-            {
-                var px = bmp.GetPixel(pos.X, pos.Y);
-                sb.AppendLine($"  {col} @ ({pos.X},{pos.Y}) RGB=({px.R},{px.G},{px.B}) #{px.R:X2}{px.G:X2}{px.B:X2}");
-            }
+            sb.AppendLine("TIP POINTS:");
+            foreach (var (col, pos) in tipPoints)
+                sb.AppendLine($"  {col} @ ({pos.X},{pos.Y})");
             sb.AppendLine("TOP RINGS:");
             foreach (var (pos, col) in topRings)
-            {
-                var px = bmp.GetPixel(Math.Clamp(pos.X, 0, bmp.Width-1), Math.Clamp(pos.Y, 0, bmp.Height-1));
-                sb.AppendLine($"  {col} @ ({pos.X},{pos.Y}) RGB=({px.R},{px.G},{px.B}) #{px.R:X2}{px.G:X2}{px.B:X2}");
-            }
+                sb.AppendLine($"  {col} @ ({pos.X},{pos.Y})");
             sb.AppendLine("BOTTOM RINGS:");
             foreach (var (pos, col) in bottomRings)
-            {
-                var px = bmp.GetPixel(Math.Clamp(pos.X, 0, bmp.Width-1), Math.Clamp(pos.Y, 0, bmp.Height-1));
-                sb.AppendLine($"  {col} @ ({pos.X},{pos.Y}) RGB=({px.R},{px.G},{px.B}) #{px.R:X2}{px.G:X2}{px.B:X2}");
-            }
+                sb.AppendLine($"  {col} @ ({pos.X},{pos.Y})");
             System.IO.File.AppendAllText(System.IO.Path.Combine(dir, "colors.txt"), sb.ToString());
         }
         catch { }

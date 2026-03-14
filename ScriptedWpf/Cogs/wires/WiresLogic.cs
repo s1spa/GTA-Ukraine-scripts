@@ -20,11 +20,9 @@ enum WireColor
 // ── Визначення кольору пікселя ────────────────────────────────────────────────
 static class ColorMatcher
 {
-    // Returns the best matching WireColor from a dictionary of (color → samples)
-    // Threshold: best dist < 3000 (tighter than before since user picked exact pixels)
-    public static WireColor MatchFromSamples(Color c, Dictionary<WireColor, List<PixelSample>> samples)
+    public static WireColor MatchFromSamples(Color c, Dictionary<WireColor, List<PixelSample>> samples, int threshold = 75)
     {
-        int bestDist = 3000; // threshold
+        int bestDist = threshold;
         WireColor best = WireColor.Unknown;
         foreach (var (wc, pixList) in samples)
         {
@@ -75,7 +73,12 @@ static class WireScanner
     public static List<(Point pos, WireColor color)> FindTopWireTips(Bitmap bmp, Rectangle screen, WiresConfig cfg)
     {
         var wireSamples = BuildWireSamples(cfg);
-        return ScanWireHLine(bmp, (int)(bmp.Height * cfg.TopWireY),
+        // Рахуємо середній Y з Wire-зразків верхніх кольорів (TopRingColors)
+        var topWireYs = cfg.ColorSamples
+            .Where(kv => TopRingColors.Contains(Enum.TryParse<WireColor>(kv.Key, out var wc) ? wc : WireColor.Unknown))
+            .SelectMany(kv => kv.Value.Wire).Select(s => s.YPct).ToList();
+        double topY = topWireYs.Count > 0 ? topWireYs.Average() : cfg.TopWireY;
+        return ScanWireHLine(bmp, (int)(bmp.Height * topY),
             (int)(bmp.Width * cfg.ScanX1), (int)(bmp.Width * cfg.ScanX2),
             wireSamples, missingColor: WireColor.Black);
     }
@@ -83,12 +86,17 @@ static class WireScanner
     public static List<(Point pos, WireColor color)> FindBottomWireTips(Bitmap bmp, Rectangle screen, WiresConfig cfg)
     {
         var wireSamples = BuildWireSamples(cfg);
-        return ScanWireHLine(bmp, (int)(bmp.Height * cfg.BotWireY),
+        // Рахуємо середній Y з Wire-зразків нижніх кольорів (BotRingColors)
+        var botWireYs = cfg.ColorSamples
+            .Where(kv => BotRingColors.Contains(Enum.TryParse<WireColor>(kv.Key, out var wc) ? wc : WireColor.Unknown))
+            .SelectMany(kv => kv.Value.Wire).Select(s => s.YPct).ToList();
+        double botY = botWireYs.Count > 0 ? botWireYs.Average() : cfg.BotWireY;
+        return ScanWireHLine(bmp, (int)(bmp.Height * botY),
             (int)(bmp.Width * cfg.ScanX1), (int)(bmp.Width * cfg.ScanX2),
             wireSamples, missingColor: WireColor.DarkBlue);
     }
 
-    // Скануємо ±3 рядки навколо Y, накопичуємо голоси по X-кластерах
+    // Скануємо ±halfH рядків навколо Y, накопичуємо голоси по X-кластерах
     static List<(Point pos, WireColor color)> ScanWireHLine(
         Bitmap bmp, int y, int x1, int x2,
         Dictionary<WireColor, List<PixelSample>> wireSamples,
@@ -102,14 +110,15 @@ static class WireScanner
         x1 = Math.Clamp(x1, 0, bmp.Width  - 1);
         x2 = Math.Clamp(x2, 0, bmp.Width  - 1);
 
-        const int halfH = 3;
+        const int halfH = 20;
         int yMin = Math.Max(0, y - halfH);
         int yMax = Math.Min(bmp.Height - 1, y + halfH);
 
         var data = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height),
             ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
 
-        var votes = new (int count, WireColor color)[x2 - x1 + 1];
+        var votes = new int[x2 - x1 + 1];
+        var colorVotesPerX = new Dictionary<WireColor, int>[x2 - x1 + 1];
 
         unsafe
         {
@@ -124,8 +133,9 @@ static class WireScanner
                     if (wc == WireColor.Unknown) continue;
 
                     int i = x - x1;
-                    votes[i].count++;
-                    if (votes[i].color == WireColor.Unknown) votes[i].color = wc;
+                    votes[i]++;
+                    colorVotesPerX[i] ??= new Dictionary<WireColor, int>();
+                    colorVotesPerX[i][wc] = colorVotesPerX[i].GetValueOrDefault(wc) + 1;
                 }
             }
         }
@@ -134,26 +144,26 @@ static class WireScanner
 
         var clusters = new List<(int x, WireColor color)>();
         int clStart = -1, sumX = 0, sumCount = 0;
-        WireColor clColor = WireColor.Unknown;
         var colorVotes = new Dictionary<WireColor, int>();
 
         for (int i = 0; i <= votes.Length; i++)
         {
-            bool hit = i < votes.Length && votes[i].count > 0;
+            bool hit = i < votes.Length && votes[i] > 0;
             if (hit)
             {
                 if (clStart < 0) { clStart = i; colorVotes.Clear(); }
                 sumX += i; sumCount++;
-                var vc = votes[i].color;
-                colorVotes[vc] = colorVotes.GetValueOrDefault(vc) + votes[i].count;
+                if (colorVotesPerX[i] != null)
+                    foreach (var (wc, cnt) in colorVotesPerX[i])
+                        colorVotes[wc] = colorVotes.GetValueOrDefault(wc) + cnt;
             }
             else if (clStart >= 0)
             {
                 if (sumCount >= 2)
                 {
                     int cx = x1 + sumX / sumCount;
-                    clColor = colorVotes.MaxBy(kv => kv.Value).Key;
-                    clusters.Add((cx, clColor));
+                    var dominant = colorVotes.MaxBy(kv => kv.Value).Key;
+                    clusters.Add((cx, dominant));
                 }
                 clStart = -1; sumX = 0; sumCount = 0;
             }
@@ -201,22 +211,52 @@ static class WireScanner
 
     // ── Кільця — сканування прямокутної зони ──────────────────────────────────
 
+    // Верхній ряд завжди містить ці 5 кольорів
+    static readonly HashSet<WireColor> TopRingColors = new()
+        { WireColor.Red, WireColor.Blue, WireColor.Yellow, WireColor.Black, WireColor.Green };
+    // Нижній ряд завжди містить ці 5 кольорів
+    static readonly HashSet<WireColor> BotRingColors = new()
+        { WireColor.Purple, WireColor.DarkBlue, WireColor.DarkGreen, WireColor.Teal, WireColor.Olive };
+
     public static (List<(Point center, WireColor color)> top, List<(Point center, WireColor color)> bottom)
         FindRings(Bitmap bmp, WiresConfig cfg)
     {
-        var ringSamples = BuildRingSamples(cfg);
+        var allSamples = BuildRingSamples(cfg);
+        var topSamples = allSamples.Where(kv => TopRingColors.Contains(kv.Key))
+                                   .ToDictionary(kv => kv.Key, kv => kv.Value);
+        var botSamples = allSamples.Where(kv => BotRingColors.Contains(kv.Key))
+                                   .ToDictionary(kv => kv.Key, kv => kv.Value);
+
+        double midZonePct = (cfg.RingTopY + cfg.RingBotY) / 2.0;
+
+        // Рахуємо середній Y верхнього і нижнього рядів з Ring-зразків
+        var topYs = cfg.ColorSamples
+            .Where(kv => TopRingColors.Contains(Enum.TryParse<WireColor>(kv.Key, out var wc) ? wc : WireColor.Unknown))
+            .SelectMany(kv => kv.Value.Ring).Select(s => s.YPct).ToList();
+        var botYs = cfg.ColorSamples
+            .Where(kv => BotRingColors.Contains(Enum.TryParse<WireColor>(kv.Key, out var wc) ? wc : WireColor.Unknown))
+            .SelectMany(kv => kv.Value.Ring).Select(s => s.YPct).ToList();
+
+        double topYPct = topYs.Count > 0 ? topYs.Average() : cfg.RingTopY;
+        double botYPct = botYs.Count > 0 ? botYs.Average() : cfg.RingBotY;
+
+        int ringTopY = (int)(bmp.Height * topYPct);
+        int ringBotY = (int)(bmp.Height * botYPct);
+        const int halfH = 40;
 
         var top = ScanRingArea(bmp,
-            (int)(bmp.Height * cfg.RingTopY),
-            (int)(bmp.Width  * cfg.RingTopX1),
-            (int)(bmp.Width  * cfg.RingTopX2),
-            ringSamples, missingColor: WireColor.Black);
+            ringTopY,
+            (int)(bmp.Width * cfg.RingTopX1),
+            (int)(bmp.Width * cfg.RingTopX2),
+            halfH,
+            topSamples, missingColor: WireColor.Black);
 
         var bot = ScanRingArea(bmp,
-            (int)(bmp.Height * cfg.RingBotY),
-            (int)(bmp.Width  * cfg.RingBotX1),
-            (int)(bmp.Width  * cfg.RingBotX2),
-            ringSamples, missingColor: WireColor.DarkBlue);
+            ringBotY,
+            (int)(bmp.Width * cfg.RingBotX1),
+            (int)(bmp.Width * cfg.RingBotX2),
+            halfH,
+            botSamples, missingColor: WireColor.DarkBlue);
 
         return (top, bot);
     }
@@ -224,7 +264,7 @@ static class WireScanner
     // Скануємо прямокутну зону навколо лінії кілець,
     // знаходимо кластери по X і беремо домінуючий колір кожного кластера.
     static List<(Point center, WireColor color)> ScanRingArea(
-        Bitmap bmp, int y, int x1, int x2,
+        Bitmap bmp, int y, int x1, int x2, int halfH,
         Dictionary<WireColor, List<PixelSample>> ringSamples,
         WireColor missingColor)
     {
@@ -232,7 +272,6 @@ static class WireScanner
         x2 = Math.Clamp(x2, 0, bmp.Width  - 1);
         if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
 
-        const int halfH = 8;
         int yMin = Math.Max(0, y - halfH);
         int yMax = Math.Min(bmp.Height - 1, y + halfH);
 
@@ -249,8 +288,10 @@ static class WireScanner
         var data = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height),
             ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
 
-        // votes[x-x1] = (count, dominant color)
-        var votes = new (int count, WireColor color)[x2 - x1 + 1];
+        // votes[x-x1] = кількість "влучень" по всіх кольорах
+        var votes = new int[x2 - x1 + 1];
+        // colorVotesPerX[x-x1][color] = кількість влучень для цього кольору
+        var colorVotesPerX = new Dictionary<WireColor, int>[x2 - x1 + 1];
 
         unsafe
         {
@@ -261,32 +302,35 @@ static class WireScanner
                 for (int x = x1; x <= x2; x++)
                 {
                     int bv = rowPtr[x * 4], gv = rowPtr[x * 4 + 1], rv = rowPtr[x * 4 + 2];
-                    var wc = ColorMatcher.MatchFromSamples(Color.FromArgb(rv, gv, bv), ringSamples);
+                    var wc = ColorMatcher.MatchFromSamples(Color.FromArgb(rv, gv, bv), ringSamples, threshold: 1500);
                     if (wc == WireColor.Unknown) continue;
 
                     int i = x - x1;
-                    votes[i].count++;
-                    if (votes[i].color == WireColor.Unknown) votes[i].color = wc;
+                    votes[i]++;
+                    colorVotesPerX[i] ??= new Dictionary<WireColor, int>();
+                    colorVotesPerX[i][wc] = colorVotesPerX[i].GetValueOrDefault(wc) + 1;
                 }
             }
         }
 
         bmp.UnlockBits(data);
 
-        // Знаходимо кластери по X
-        var clusters = new List<(int cx, WireColor color)>();
-        int clStart = -1, sumX = 0, sumCount = 0;
+        // Знаходимо кластери по X, зберігаємо вагу (totalVotes)
+        var clusters = new List<(int cx, WireColor color, int weight)>();
+        int clStart = -1, sumX = 0, sumCount = 0, totalVotes = 0;
         var colorVotes = new Dictionary<WireColor, int>();
 
         for (int i = 0; i <= votes.Length; i++)
         {
-            bool hit = i < votes.Length && votes[i].count > 0;
+            bool hit = i < votes.Length && votes[i] > 0;
             if (hit)
             {
-                if (clStart < 0) { clStart = i; colorVotes.Clear(); }
+                if (clStart < 0) { clStart = i; colorVotes.Clear(); totalVotes = 0; }
                 sumX += i; sumCount++;
-                var vc = votes[i].color;
-                colorVotes[vc] = colorVotes.GetValueOrDefault(vc) + votes[i].count;
+                totalVotes += votes[i];
+                if (colorVotesPerX[i] != null)
+                    foreach (var (wc, cnt) in colorVotesPerX[i])
+                        colorVotes[wc] = colorVotes.GetValueOrDefault(wc) + cnt;
             }
             else if (clStart >= 0)
             {
@@ -294,29 +338,83 @@ static class WireScanner
                 {
                     int cx = x1 + sumX / sumCount;
                     var dominant = colorVotes.MaxBy(kv => kv.Value).Key;
-                    clusters.Add((cx, dominant));
+                    clusters.Add((cx, dominant, totalVotes));
                 }
-                clStart = -1; sumX = 0; sumCount = 0;
+                clStart = -1; sumX = 0; sumCount = 0; totalVotes = 0;
             }
         }
 
-        // Дедупліція кластерів < 30px
-        var deduped = new List<(int cx, WireColor color)>();
+        // Дедупліція кластерів < 30px (залишаємо важчий)
+        var deduped = new List<(int cx, WireColor color, int weight)>();
         foreach (var c in clusters)
         {
-            if (deduped.Count > 0 && c.cx - deduped[^1].cx < 30) continue;
+            if (deduped.Count > 0 && c.cx - deduped[^1].cx < 30)
+            {
+                if (c.weight > deduped[^1].weight)
+                    deduped[^1] = c;
+                continue;
+            }
             deduped.Add(c);
         }
 
-        var result = deduped.Select(c => (new Point(c.cx, y), c.color)).ToList();
+        var result = deduped.Select(c => (new Point(c.cx, y), c.color, c.weight)).ToList();
+
+        // Якщо знайшли більше 5 — застосовуємо grid-фільтрацію з урахуванням ваги кластерів
+        if (result.Count > 5)
+            result = FilterToGrid(result, 5, y);
 
         // Замінюємо Unknown → missingColor (темне кільце без зразків)
         for (int i = 0; i < result.Count; i++)
         {
             if (result[i].color == WireColor.Unknown)
-                result[i] = (result[i].Item1, missingColor);
+                result[i] = (result[i].Item1, missingColor, result[i].weight);
         }
 
+        return result.Select(r => (r.Item1, r.color)).ToList();
+    }
+
+    // Вибираємо підмножину з count елементів, що найкраще утворює рівномірну сітку.
+    // Score = відхилення від рівної сітки - бонус за сумарну вагу (щоб відкидати слабкі хибні кластери)
+    static List<(Point center, WireColor color, int weight)> FilterToGrid(
+        List<(Point center, WireColor color, int weight)> items, int count, int y)
+    {
+        if (items.Count <= count) return items;
+
+        var xs = items.Select(i => i.center.X).ToArray();
+        var ws = items.Select(i => i.weight).ToArray();
+        int maxW = ws.Max();
+        int n = items.Count;
+        int bestMask = 0;
+        double bestScore = double.MaxValue;
+
+        void Recurse(int start, int chosen, int mask)
+        {
+            if (chosen == count)
+            {
+                var sel = new List<int>();
+                int sumW = 0;
+                for (int b = 0; b < n; b++)
+                    if ((mask & (1 << b)) != 0) { sel.Add(xs[b]); sumW += ws[b]; }
+                sel.Sort();
+                double step = (sel[^1] - sel[0]) / (double)(count - 1);
+                if (step < 10) return;
+                double gridErr = 0;
+                for (int k = 0; k < count; k++)
+                    gridErr += Math.Abs(sel[k] - (sel[0] + k * step));
+                // Штраф за слабкі кластери: нормалізуємо вагу відносно maxW*count
+                double weightPenalty = (maxW * count - sumW) * 0.5;
+                double score = gridErr + weightPenalty;
+                if (score < bestScore) { bestScore = score; bestMask = mask; }
+                return;
+            }
+            for (int i = start; i <= n - (count - chosen); i++)
+                Recurse(i + 1, chosen + 1, mask | (1 << i));
+        }
+        Recurse(0, 0, 0);
+
+        var result = new List<(Point center, WireColor color, int weight)>();
+        for (int b = 0; b < n; b++)
+            if ((bestMask & (1 << b)) != 0) result.Add(items[b]);
         return result;
     }
 }
@@ -327,9 +425,9 @@ static class DragInput
     public static void Drag(int fromX, int fromY, int toX, int toY, Action<string> log)
     {
         WinApi.SetCursorPos(fromX, fromY);
-        Thread.Sleep(50);
+        Thread.Sleep(25);
         WinApi.mouse_event(0x0002, 0, 0, 0, 0); // mousedown
-        Thread.Sleep(80);
+        Thread.Sleep(40);
 
         int steps = 15;
         for (int i = 1; i <= steps; i++)
@@ -337,11 +435,11 @@ static class DragInput
             int x = fromX + (toX - fromX) * i / steps;
             int y = fromY + (toY - fromY) * i / steps;
             WinApi.SetCursorPos(x, y);
-            Thread.Sleep(18);
+            Thread.Sleep(9);
         }
 
-        Thread.Sleep(50);
+        Thread.Sleep(25);
         WinApi.mouse_event(0x0004, 0, 0, 0, 0); // mouseup
-        Thread.Sleep(100);
+        Thread.Sleep(50);
     }
 }
