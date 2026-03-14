@@ -2,9 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
-using ScriptedProgram.Models;
+using ScriptedWpf.Models;
 
-namespace ScriptedProgram.Core;
+namespace ScriptedWpf.Core;
 
 public static class ModuleLoader
 {

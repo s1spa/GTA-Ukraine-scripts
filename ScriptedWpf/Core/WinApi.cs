@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace ScriptedProgram.Core;
+namespace ScriptedWpf.Core;
 
 public static class WinApi
 {

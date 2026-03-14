@@ -1,19 +1,28 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
-    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <UseWPF>true</UseWPF>
     <Platforms>x64</Platforms>
-    <RootNamespace>ScriptedProgram</RootNamespace>
-    <AssemblyName>ScriptedProgram</AssemblyName>
-    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <RootNamespace>ScriptedWpf</RootNamespace>
+    <AssemblyName>ScriptedWpf</AssemblyName>
   </PropertyGroup>
+
+  <PropertyGroup>
+    <UseWindowsForms>true</UseWindowsForms>
+  </PropertyGroup>
+
   <ItemGroup>
+    <PackageReference Include="MahApps.Metro" Version="2.4.10" />
+    <PackageReference Include="MaterialDesignThemes" Version="5.1.0" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
     <PackageReference Include="Tesseract" Version="5.2.0" />
   </ItemGroup>
+
   <ItemGroup>
     <Content Include="Cogs\**\*.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
@@ -23,4 +32,5 @@
       <Link>tessdata\%(RecursiveDir)%(Filename)%(Extension)</Link>
     </Content>
   </ItemGroup>
+
 </Project>

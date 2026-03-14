@@ -4,7 +4,7 @@ using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace ScriptedProgram.Cogs.Cda;
+namespace ScriptedWpf.Cogs.Cda;
 
 public class CdaConfig
 {
@@ -15,8 +15,6 @@ public class CdaConfig
     [JsonPropertyName("height")]       public int    Height       { get; set; }
     [JsonPropertyName("minPrice")]     public int    MinPrice     { get; set; } = 1000;
     [JsonPropertyName("maxTon")]       public double MaxTon       { get; set; } = 5.0;
-    [JsonPropertyName("minLvl")]       public int    MinLvl       { get; set; } = 1;
-    [JsonPropertyName("maxLvl")]       public int    MaxLvl       { get; set; } = 5;
     [JsonPropertyName("types")]
     public List<string> Types { get; set; } = new()
     {

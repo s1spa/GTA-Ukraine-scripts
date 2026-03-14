@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
-namespace ScriptedProgram.Models;
+namespace ScriptedWpf.Models;
 
 public class ModuleInfo
 {

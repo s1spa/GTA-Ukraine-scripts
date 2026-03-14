@@ -14,9 +14,9 @@ using Tesseract;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
 using Windows.Storage.Streams;
-using ScriptedProgram.Core;
+using ScriptedWpf.Core;
 
-namespace ScriptedProgram.Cogs.Cda;
+namespace ScriptedWpf.Cogs.Cda;
 
 // ── Screen Capture ────────────────────────────────────────────────────────────
 static class ScreenCapture
