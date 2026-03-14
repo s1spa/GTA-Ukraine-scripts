@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
@@ -15,11 +17,14 @@ namespace ScriptedWpf;
 
 public partial class MainWindow : Window
 {
-    record ModuleEntry(ModuleInfo Info, IModule? Module, Button SidebarBtn);
+    record ModuleEntry(ModuleInfo Info, IModule? Module, Button SidebarBtn, TextBlock StarText);
 
-    readonly List<ModuleEntry>  _entries = new();
+    readonly List<ModuleEntry>  _entries   = new();
+    readonly HashSet<string>    _favorites = LoadFavorites();
     HotkeyService?              _hotkeys;
     ModuleEntry?                _selected;
+
+    static string FavPath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "favorites.json");
 
     // Log color rules: prefix → color
     static readonly (string Prefix, Color Color)[] _logRules =
@@ -45,45 +50,120 @@ public partial class MainWindow : Window
             SelectModule(_entries[0]);
     }
 
+    // ── Favorites persistence ─────────────────────────────────────────────────
+    static HashSet<string> LoadFavorites()
+    {
+        try
+        {
+            if (File.Exists(FavPath))
+                return new HashSet<string>(JsonSerializer.Deserialize<List<string>>(File.ReadAllText(FavPath)) ?? []);
+        }
+        catch { }
+        return new();
+    }
+
+    void SaveFavorites()
+    {
+        try { File.WriteAllText(FavPath, JsonSerializer.Serialize(_favorites.ToList())); }
+        catch { }
+    }
+
+    void RefreshSidebarOrder()
+    {
+        SidebarPanel.Children.Clear();
+        foreach (var e in _entries.OrderByDescending(e => _favorites.Contains(e.Info.Id)))
+            SidebarPanel.Children.Add(e.SidebarBtn);
+    }
+
+    // ── Module loading ────────────────────────────────────────────────────────
     void LoadModules()
     {
         string cogsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Cogs");
         var loaded = ModuleLoader.LoadAll(cogsPath);
 
+        var accent  = (Brush)Application.Current.Resources["AccentBrush"];
+        var textDim = (Brush)Application.Current.Resources["TextDimBrush"];
+
         foreach (var (info, module) in loaded)
         {
+            bool isFav = _favorites.Contains(info.Id);
+
             var btn = new Button
             {
                 Style = (Style)Resources["SidebarButtonStyle"],
                 Tag   = info,
             };
 
-            var btnContent = new StackPanel { Orientation = Orientation.Horizontal };
-            var statusDot  = new System.Windows.Shapes.Ellipse
+            // Status dot
+            var statusDot = new System.Windows.Shapes.Ellipse
             {
                 Width             = 6,
                 Height            = 6,
                 Margin            = new Thickness(0, 0, 8, 0),
                 VerticalAlignment = VerticalAlignment.Center,
-                Fill              = (Brush)Application.Current.Resources["TextDimBrush"],
+                Fill              = textDim,
             };
-            btnContent.Children.Add(statusDot);
-            btnContent.Children.Add(new TextBlock
+
+            // Star text (right side)
+            var starText = new TextBlock
+            {
+                Text              = isFav ? "★" : "☆",
+                Foreground        = isFav ? accent : textDim,
+                FontSize          = 16,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin            = new Thickness(0, 0, 6, 0),
+                Cursor            = Cursors.Hand,
+                ToolTip           = "Додати в обране",
+            };
+
+            // Button content: dock star to right, dot+name to left
+            var dock = new DockPanel { LastChildFill = true, HorizontalAlignment = HorizontalAlignment.Stretch };
+            DockPanel.SetDock(starText, Dock.Right);
+            dock.Children.Add(starText);
+
+            var left = new StackPanel { Orientation = Orientation.Horizontal };
+            left.Children.Add(statusDot);
+            left.Children.Add(new TextBlock
             {
                 Text              = info.Name,
                 VerticalAlignment = VerticalAlignment.Center,
                 FontSize          = 13,
             });
-            btn.Content = btnContent;
+            dock.Children.Add(left);
+            btn.Content = dock;
 
-            var entry = new ModuleEntry(info, module, btn);
+            var entry = new ModuleEntry(info, module, btn, starText);
+
+            // Star click (stop propagation so sidebar btn doesn't fire)
+            starText.MouseLeftButtonDown += (_, e) =>
+            {
+                e.Handled = true;
+                if (_favorites.Contains(info.Id))
+                {
+                    _favorites.Remove(info.Id);
+                    starText.Text       = "☆";
+                    starText.Foreground = textDim;
+                }
+                else
+                {
+                    _favorites.Add(info.Id);
+                    starText.Text       = "★";
+                    starText.Foreground = accent;
+                }
+                SaveFavorites();
+                RefreshSidebarOrder();
+
+                // Restore selected highlight after re-order
+                if (_selected != null)
+                    _selected.SidebarBtn.Background = new SolidColorBrush(Color.FromArgb(28, 76, 255, 114));
+            };
+
             btn.Click += (_, _) => SelectModule(entry);
 
             if (module != null)
             {
                 module.Initialize(msg => Dispatcher.Invoke(() => AppendLog(msg)));
 
-                // Dot reflects running state (works for F9 too via StateChanged)
                 module.StateChanged += () => Dispatcher.Invoke(() =>
                     statusDot.Fill = module.IsRunning
                         ? (Brush)Application.Current.Resources["AccentBrush"]
@@ -113,26 +193,26 @@ public partial class MainWindow : Window
                 }
             }
 
-            SidebarPanel.Children.Add(btn);
             _entries.Add(entry);
         }
 
-        // Register hotkeys after all modules loaded
+        // Register hotkeys
         if (_hotkeys != null)
             foreach (var e in _entries)
                 e.Module?.RegisterHotkeys(_hotkeys);
+
+        // Add to sidebar sorted (favorites first)
+        RefreshSidebarOrder();
     }
 
     void SelectModule(ModuleEntry entry)
     {
-        // Deselect previous
         if (_selected != null)
             _selected.SidebarBtn.Background = Brushes.Transparent;
 
         _selected = entry;
         entry.SidebarBtn.Background = new SolidColorBrush(Color.FromArgb(28, 76, 255, 114));
 
-        // Build detail view
         DetailContent.Content = BuildDetailView(entry);
     }
 
@@ -193,7 +273,7 @@ public partial class MainWindow : Window
             Content         = "OFF",
             FontSize        = 10,
             FontWeight      = FontWeights.Bold,
-            Tag             = false, // isOn state
+            Tag             = false,
         };
 
         if (entry.Module == null)
@@ -202,7 +282,6 @@ public partial class MainWindow : Window
             statusText.Text     = "НЕ ПІДТРИМУЄТЬСЯ";
         }
 
-        // Sync toggle visual state from IsRunning
         void SyncToggleUi()
         {
             bool on = entry.Module?.IsRunning == true;
@@ -214,7 +293,6 @@ public partial class MainWindow : Window
             statusText.Foreground = on ? accent : textDim;
         }
 
-        // F9 → оновити UI через StateChanged
         if (entry.Module != null)
             entry.Module.StateChanged += () => Dispatcher.Invoke(SyncToggleUi);
 
@@ -225,7 +303,6 @@ public partial class MainWindow : Window
                 entry.Module.Stop();
             else
                 entry.Module.Start();
-            // SyncToggleUi буде викликано через StateChanged
         };
 
         togglePanel.Children.Add(statusText);
@@ -248,7 +325,6 @@ public partial class MainWindow : Window
 
         var content = new StackPanel();
 
-        // Description
         if (!string.IsNullOrWhiteSpace(entry.Info.Description))
         {
             var desc = new TextBlock
@@ -262,14 +338,13 @@ public partial class MainWindow : Window
             content.Children.Add(desc);
         }
 
-        // Separator + Settings label
         if (entry.Module != null)
         {
             var sep = new Border
             {
-                Height          = 1,
-                Background      = borderB,
-                Margin          = new Thickness(0, 0, 0, 16),
+                Height     = 1,
+                Background = borderB,
+                Margin     = new Thickness(0, 0, 0, 16),
             };
             content.Children.Add(sep);
 
@@ -297,17 +372,15 @@ public partial class MainWindow : Window
 
     void AppendLog(string message)
     {
-        var doc = TerminalBox.Document;
+        var doc  = TerminalBox.Document;
         var para = new Paragraph { Margin = new Thickness(0) };
 
-        // Timestamp
         var ts = new Run($"[{DateTime.Now:HH:mm:ss}] ")
         {
             Foreground = (Brush)Application.Current.Resources["TextDimBrush"],
         };
         para.Inlines.Add(ts);
 
-        // Message with color rules
         Color msgColor = ((SolidColorBrush)Application.Current.Resources["TextSecondaryBrush"]).Color;
         foreach (var (prefix, color) in _logRules)
         {
@@ -320,7 +393,6 @@ public partial class MainWindow : Window
         doc.Blocks.Add(para);
         TerminalBox.ScrollToEnd();
 
-        // Keep last 500 lines
         while (doc.Blocks.Count > 500)
             doc.Blocks.Remove(doc.Blocks.FirstBlock);
     }

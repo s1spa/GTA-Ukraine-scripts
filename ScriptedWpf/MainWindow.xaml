@@ -31,7 +31,7 @@
                             <Border x:Name="AccentBar" BorderThickness="2,0,0,0"
                                     BorderBrush="Transparent" CornerRadius="2">
                                 <ContentPresenter VerticalAlignment="Center"
-                                                  HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                  HorizontalAlignment="Stretch"
                                                   Margin="{TemplateBinding Padding}"/>
                             </Border>
                         </Border>
