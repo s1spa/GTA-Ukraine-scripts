@@ -1294,10 +1294,28 @@ public sealed class WiresModule : IModule
         List<(System.Drawing.Point center, WireColor color)> rings,
         System.Drawing.Rectangle screen)
     {
-        foreach (var (wireColor, tipPt) in tipPoints)
+        // Перебираємо кольори що треба з'єднати
+        var remaining = tipPoints.Keys.ToList();
+
+        foreach (var wireColor in remaining)
         {
             var ringMatch = rings.Find(r => r.color == wireColor);
             if (ringMatch.center == default) { _log($"⚠ Кільце для {wireColor} не знайдено"); continue; }
+
+            // Перескановуємо поточний стан проводів перед кожним drag
+            // (після попереднього drag провід зникає і решта зсувається)
+            using var freshBmp = ScreenCapture.Capture(screen);
+            var freshTop    = WireScanner.FindTopWireTips(freshBmp, screen, _cfg);
+            var freshBot    = WireScanner.FindBottomWireTips(freshBmp, screen, _cfg);
+            var freshWires  = freshTop.Concat(freshBot).ToDictionary(w => w.color, w => w.pos);
+
+            System.Drawing.Point tipPt;
+            if (!freshWires.TryGetValue(wireColor, out tipPt))
+            {
+                // Якщо не знайшли свіжу позицію — беремо стару
+                tipPt = tipPoints[wireColor];
+                _log($"⚠ Свіжу позицію {wireColor} не знайдено, використовую стару");
+            }
 
             int fromX = screen.X + tipPt.X;
             int fromY = screen.Y + tipPt.Y;
