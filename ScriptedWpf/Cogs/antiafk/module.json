@@ -1,0 +1,8 @@
+{
+  "id": "antiafk",
+  "name": "Anti-AFK",
+  "description": "Кожні 5–10 хвилин (рандомно) натискає одну з клавіш W A S D на короткий час, щоб уникнути AFK-кіку.",
+  "version": "1.0.0",
+  "author": "s1spa",
+  "icon": "walk"
+}
