@@ -40,7 +40,8 @@ public static class ModuleLoader
     // Registry: add new modules here as the project grows
     static IModule? CreateModule(string id) => id switch
     {
-        "cda" => new Cogs.Cda.CdaModule(),
-        _     => null,
+        "cda"   => new Cogs.Cda.CdaModule(),
+        "wires" => new Cogs.Wires.WiresModule(),
+        _       => null,
     };
 }
