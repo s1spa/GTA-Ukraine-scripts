@@ -1328,7 +1328,6 @@ public sealed class WiresModule : IModule
                     .GroupBy(w => w.color)
                     .ToDictionary(g => g.Key, g => g.First().pos);
 
-                SaveDebugImage(bmp, tipPoints, topRings, bottomRings, _debugFrame++, _cfg);
 
                 bool wiresReady = tipPoints.Count == 10;
                 bool ringsReady = allRings.Count >= 10 || tipPoints.Keys.All(wc => allRings.Any(r => r.color == wc));
