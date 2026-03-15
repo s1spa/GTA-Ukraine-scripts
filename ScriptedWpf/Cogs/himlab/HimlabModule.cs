@@ -169,6 +169,25 @@ public sealed class HimlabModule : IModule
 
         int row = 0;
 
+        // ── Інструкція ────────────────────────────────────────────────────────
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var instrBlock = new TextBlock
+        {
+            Text = "ІНСТРУКЦІЯ\n" +
+                   "1. Відкрий гру та викличи появу капчі (W/A/S/D)\n" +
+                   "2. Для кожної літери натисни «Захопити» — є 3 секунди\n" +
+                   "   щоб перейти в гру поки потрібна літера на екрані\n" +
+                   "3. Скануй усі 4 літери (W, A, S, D)\n" +
+                   "4. F9 — увімкнути / вимкнути\n" +
+                   "   Модуль сам чекає появи капчі та проходить її",
+            Foreground = textDim, FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 12)
+        };
+        Grid.SetRow(instrBlock, row); Grid.SetColumnSpan(instrBlock, 2);
+        grid.Children.Add(instrBlock);
+        row++;
+
         void AddRow(string label, FrameworkElement input)
         {
             grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(36) });

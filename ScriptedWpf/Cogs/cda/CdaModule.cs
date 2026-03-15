@@ -81,6 +81,24 @@ public sealed class CdaModule : IModule
 
         int row = 0;
 
+        // ── Інструкція ────────────────────────────────────────────────────────
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var instrBlock = new TextBlock
+        {
+            Text = "ІНСТРУКЦІЯ\n" +
+                   "1. Запусти гру дальнобійника та відкрий список замовлень\n" +
+                   "2. Встанови фільтри нижче (мін. ціна, тоннаж, типи вантажів)\n" +
+                   "3. F7 — увімкнути / вимкнути детектор кодів\n" +
+                   "4. Скануй зону коду: натисни «Скан зони» і обведи\n" +
+                   "   область де з'являється 6-значний код підтвердження",
+            Foreground = textDim, FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 12)
+        };
+        Grid.SetRow(instrBlock, row); Grid.SetColumnSpan(instrBlock, 2);
+        grid.Children.Add(instrBlock);
+        row++;
+
         void AddRow(string label, FrameworkElement input)
         {
             grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(36) });

@@ -187,7 +187,27 @@ public sealed class HlorkaModule : IModule
     FrameworkElement BuildSettingsPanel()
     {
         var textSec = (WpfBrush)Application.Current.Resources["TextSecondaryBrush"];
+        var textDim = (WpfBrush)Application.Current.Resources["TextDimBrush"];
         var stack   = new StackPanel { Orientation = Orientation.Vertical };
+
+        // ── Інструкція ────────────────────────────────────────────────────────
+        stack.Children.Add(new TextBlock
+        {
+            Text = "ІНСТРУКЦІЯ",
+            Foreground = textDim, FontSize = 9, FontWeight = FontWeights.Bold,
+            Margin = new Thickness(0, 0, 0, 4)
+        });
+        stack.Children.Add(new TextBlock
+        {
+            Text = "1. Виділи зону — обведи планку міні-гри на екрані\n" +
+                   "2. Збережи приклад — поки міні-гра активна на екрані\n" +
+                   "3. F10 — увімкнути / вимкнути\n" +
+                   "4. Якщо часто хибно спрацьовує — зменш поріг MAD\n" +
+                   "   (дивись значення в терміналі при очікуванні)",
+            Foreground = textDim, FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 12)
+        });
 
         // ── Монітор ──────────────────────────────────────────────────────────
         var monRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
@@ -445,20 +465,17 @@ public sealed class HlorkaModule : IModule
                 var region = GetScanRegion(screen);
                 using var bmp = ScreenCapture.Capture(region);
 
-                string debugInfo = HlorkaScanner.SaveDebug(bmp);
+                bool visible = CheckVisible(bmp);
+                int? ballY   = HlorkaScanner.FindBallY(bmp);
+                int? lineY   = HlorkaScanner.FindLineY(bmp);
 
-                int? ballY = HlorkaScanner.FindBallY(bmp);
-                int? lineY = HlorkaScanner.FindLineY(bmp);
+                string madInfo = _template != null
+                    ? $"MAD={HlorkaScanner.GetMatchScore(bmp, _template):F1}  threshold={_cfg.MatchThreshold}"
+                    : "еталон не збережено";
 
-                string detection = ballY.HasValue && lineY.HasValue
-                    ? $"✅ Кулька Y={ballY}  Лінія Y={lineY}  Різниця={lineY - ballY} px"
-                    : ballY.HasValue
-                        ? $"⚠️ Кулька Y={ballY}, лінія НЕ знайдена"
-                        : lineY.HasValue
-                            ? $"⚠️ Лінія Y={lineY}, кулька НЕ знайдена"
-                            : "❌ Нічого не знайдено — перевір область сканування";
-
-                string msg = $"{detection}\n{debugInfo}\n→ Збережено hlorka_raw.png і hlorka_debug.png на робочий стіл";
+                string msg = visible
+                    ? $"✅ Міні-гру знайдено!  Кулька Y={ballY}  Лінія Y={lineY}  ({madInfo})"
+                    : $"⏸ Міні-гра не знайдена  ({madInfo})";
 
                 Application.Current.Dispatcher.Invoke(() =>
                 {
