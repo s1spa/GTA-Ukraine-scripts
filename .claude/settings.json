@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(dotnet run -c Release)"
+      "Bash(dotnet run -c Release)",
+      "Bash(dotnet build \"e:/Programing/C#/GTA-Ukraine-scripts/ScriptedWpf/ScriptedWpf.csproj\" -c Release)"
     ]
   }
 }

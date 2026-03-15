@@ -80,7 +80,7 @@ static class WireScanner
         double topY = topWireYs.Count > 0 ? topWireYs.Average() : cfg.TopWireY;
         return ScanWireHLine(bmp, (int)(bmp.Height * topY),
             (int)(bmp.Width * cfg.ScanX1), (int)(bmp.Width * cfg.ScanX2),
-            wireSamples, missingColor: WireColor.Black);
+            wireSamples, missingColor: WireColor.Black, threshold: cfg.WireThreshold);
     }
 
     public static List<(Point pos, WireColor color)> FindBottomWireTips(Bitmap bmp, Rectangle screen, WiresConfig cfg)
@@ -93,14 +93,14 @@ static class WireScanner
         double botY = botWireYs.Count > 0 ? botWireYs.Average() : cfg.BotWireY;
         return ScanWireHLine(bmp, (int)(bmp.Height * botY),
             (int)(bmp.Width * cfg.ScanX1), (int)(bmp.Width * cfg.ScanX2),
-            wireSamples, missingColor: WireColor.DarkBlue);
+            wireSamples, missingColor: WireColor.DarkBlue, threshold: cfg.WireThreshold);
     }
 
     // Скануємо ±halfH рядків навколо Y, накопичуємо голоси по X-кластерах
     static List<(Point pos, WireColor color)> ScanWireHLine(
         Bitmap bmp, int y, int x1, int x2,
         Dictionary<WireColor, List<PixelSample>> wireSamples,
-        WireColor missingColor)
+        WireColor missingColor, int threshold = 75)
     {
         // Якщо зразків немає — повертаємо порожній список
         if (wireSamples.Count == 0)
@@ -129,7 +129,7 @@ static class WireScanner
                 for (int x = x1; x <= x2; x++)
                 {
                     int bv = rowPtr[x * 4], gv = rowPtr[x * 4 + 1], rv = rowPtr[x * 4 + 2];
-                    var wc = ColorMatcher.MatchFromSamples(Color.FromArgb(rv, gv, bv), wireSamples);
+                    var wc = ColorMatcher.MatchFromSamples(Color.FromArgb(rv, gv, bv), wireSamples, threshold);
                     if (wc == WireColor.Unknown) continue;
 
                     int i = x - x1;
@@ -249,14 +249,14 @@ static class WireScanner
             (int)(bmp.Width * cfg.RingTopX1),
             (int)(bmp.Width * cfg.RingTopX2),
             halfH,
-            topSamples, missingColor: WireColor.Black);
+            topSamples, missingColor: WireColor.Black, threshold: cfg.RingThreshold);
 
         var bot = ScanRingArea(bmp,
             ringBotY,
             (int)(bmp.Width * cfg.RingBotX1),
             (int)(bmp.Width * cfg.RingBotX2),
             halfH,
-            botSamples, missingColor: WireColor.DarkBlue);
+            botSamples, missingColor: WireColor.DarkBlue, threshold: cfg.RingThreshold);
 
         return (top, bot);
     }
@@ -266,7 +266,7 @@ static class WireScanner
     static List<(Point center, WireColor color)> ScanRingArea(
         Bitmap bmp, int y, int x1, int x2, int halfH,
         Dictionary<WireColor, List<PixelSample>> ringSamples,
-        WireColor missingColor)
+        WireColor missingColor, int threshold = 1500)
     {
         x1 = Math.Clamp(x1, 0, bmp.Width  - 1);
         x2 = Math.Clamp(x2, 0, bmp.Width  - 1);
@@ -302,7 +302,7 @@ static class WireScanner
                 for (int x = x1; x <= x2; x++)
                 {
                     int bv = rowPtr[x * 4], gv = rowPtr[x * 4 + 1], rv = rowPtr[x * 4 + 2];
-                    var wc = ColorMatcher.MatchFromSamples(Color.FromArgb(rv, gv, bv), ringSamples, threshold: 1500);
+                    var wc = ColorMatcher.MatchFromSamples(Color.FromArgb(rv, gv, bv), ringSamples, threshold);
                     if (wc == WireColor.Unknown) continue;
 
                     int i = x - x1;

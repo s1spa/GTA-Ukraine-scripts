@@ -61,7 +61,23 @@ public sealed class WiresModule : IModule
     FrameworkElement BuildSettingsPanel()
     {
         var textSec = (WpfBrush)Application.Current.Resources["TextSecondaryBrush"];
+        var textDim = (WpfBrush)Application.Current.Resources["TextDimBrush"];
         var stack = new StackPanel { Orientation = Orientation.Vertical };
+
+        // ── Інструкція ────────────────────────────────────────────────────────
+        stack.Children.Add(new TextBlock
+        {
+            Text = "ІНСТРУКЦІЯ\n" +
+                   "1. Увійди в міні-гру з проводами\n" +
+                   "2. Натисни «Калібрувати» — є 5 секунд щоб повернутись у гру\n" +
+                   "3. Намалюй прямокутник навколо зони проводів → Enter\n" +
+                   "4. Намалюй прямокутник навколо зони кілець → Enter\n" +
+                   "5. Клікай на пікселі кожного кольору (провід і кільце)\n" +
+                   "6. Збережи → F8 щоб запустити / зупинити",
+            Foreground = textDim, FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 12)
+        });
 
         // Монітор
         var monRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
@@ -96,6 +112,23 @@ public sealed class WiresModule : IModule
             Margin = new Thickness(0, 6, 0, 0), Visibility = Visibility.Collapsed
         };
         stack.Children.Add(countdownLbl);
+
+        // Кнопка скидання калібровки
+        var resetBtn = new System.Windows.Controls.Button
+        {
+            Content = "↺ Скинути до стандартних", Height = 30,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Padding = new Thickness(16, 0, 16, 0),
+            Margin = new Thickness(0, 6, 0, 0)
+        };
+        resetBtn.Click += (_, _) =>
+        {
+            WiresConfig.ResetToDefault();
+            _cfg = WiresConfig.Load();
+            monCb.SelectedIndex = Math.Clamp(_cfg.MonitorIndex + 1, 0, monCb.Items.Count - 1);
+            _log("[Wires] Калібровку скинуто до стандартних.");
+        };
+        stack.Children.Add(resetBtn);
 
         calibBtn.Click += (_, _) =>
         {

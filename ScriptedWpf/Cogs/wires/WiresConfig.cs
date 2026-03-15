@@ -44,6 +44,12 @@ public class WiresConfig
     [JsonPropertyName("ringBotX1")] public double RingBotX1 { get; set; } = 0.525;
     [JsonPropertyName("ringBotX2")] public double RingBotX2 { get; set; } = 0.815;
 
+    // Поріг розпізнавання кольору (квадрат евклідової відстані RGB)
+    // Wire: менше = точніше, але може не знаходити при антиаліасингу. Рекомендовано: 50–150
+    [JsonPropertyName("wireThreshold")] public int WireThreshold { get; set; } = 75;
+    // Ring: більше бо кільця більш варіативні. Рекомендовано: 800–2000
+    [JsonPropertyName("ringThreshold")] public int RingThreshold { get; set; } = 1500;
+
     // Зразки кольорів (ключ = назва WireColor: "Red", "Blue", тощо)
     [JsonPropertyName("colorSamples")]
     public Dictionary<string, ColorSamples> ColorSamples { get; set; } = new();
@@ -52,6 +58,19 @@ public class WiresConfig
 
     static string FilePath => Path.Combine(
         AppDomain.CurrentDomain.BaseDirectory, "Cogs", "wires", "config.json");
+
+    static string DefaultFilePath => Path.Combine(
+        AppDomain.CurrentDomain.BaseDirectory, "Cogs", "wires", "config.default.json");
+
+    public static void ResetToDefault()
+    {
+        try
+        {
+            if (File.Exists(DefaultFilePath))
+                File.Copy(DefaultFilePath, FilePath, overwrite: true);
+        }
+        catch { }
+    }
 
     public static WiresConfig Load()
     {
