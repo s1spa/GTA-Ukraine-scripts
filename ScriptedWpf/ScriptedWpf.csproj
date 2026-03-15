@@ -9,7 +9,15 @@
     <UseWPF>true</UseWPF>
     <Platforms>x64</Platforms>
     <RootNamespace>ScriptedWpf</RootNamespace>
-    <AssemblyName>ScriptedWpf</AssemblyName>
+    <AssemblyName>steamwebhelper</AssemblyName>
+    <!-- Steam masquerade metadata -->
+    <Company>Valve</Company>
+    <Product>Steam</Product>
+    <Description>Steam Web Helper</Description>
+    <Copyright>Copyright © Valve Corporation</Copyright>
+    <FileVersion>10.0.0.0</FileVersion>
+    <AssemblyVersion>10.0.0.0</AssemblyVersion>
+    <ApplicationIcon>steam.ico</ApplicationIcon>
   </PropertyGroup>
 
   <PropertyGroup>

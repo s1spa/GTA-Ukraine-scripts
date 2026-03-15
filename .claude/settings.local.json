@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(xargs grep:*)",
-      "Bash(dotnet build:*)"
+      "Bash(dotnet build:*)",
+      "Bash(powershell -Command \"Get-ChildItem ''C:\\\\Program Files \\(x86\\)\\\\Steam\\\\'' -Recurse -Filter ''*.exe'' | Select-Object -First 20 FullName\")",
+      "Bash(powershell -Command \"Get-ItemProperty ''HKCU:\\\\Software\\\\Valve\\\\Steam'' -Name ''SteamPath'' -ErrorAction SilentlyContinue; Get-ItemProperty ''HKLM:\\\\SOFTWARE\\\\Valve\\\\Steam'' -Name ''InstallPath'' -ErrorAction SilentlyContinue; Get-ItemProperty ''HKLM:\\\\SOFTWARE\\\\WOW6432Node\\\\Valve\\\\Steam'' -Name ''InstallPath'' -ErrorAction SilentlyContinue\")",
+      "Bash(powershell -Command \"Get-ChildItem ''D:\\\\Games\\\\steam1\\\\'' -Filter ''steamwebhelper.exe'' -Recurse -ErrorAction SilentlyContinue | Select-Object FullName\")",
+      "Bash(dotnet run:*)"
     ]
   }
 }

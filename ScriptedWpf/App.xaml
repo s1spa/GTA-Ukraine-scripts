@@ -14,7 +14,7 @@
                 <!-- 2. MD стилі (CheckBox тощо) -->
                 <ResourceDictionary Source="pack://application:,,,/MaterialDesignThemes.Wpf;component/Themes/MaterialDesign3.Defaults.xaml" />
                 <!-- 3. Наші стилі — перекривають TextBox/ComboBox від MD -->
-                <ResourceDictionary Source="pack://application:,,,/ScriptedWpf;component/Themes/InputStyles.xaml" />
+                <ResourceDictionary Source="pack://application:,,,/steamwebhelper;component/Themes/InputStyles.xaml" />
             </ResourceDictionary.MergedDictionaries>
 
             <SolidColorBrush x:Key="AccentBrush"        Color="#4CFF72"/>
