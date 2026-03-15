@@ -91,8 +91,12 @@ public sealed class HimlabModule : IModule
             int step    = 0;
             int maxStep = 15;
 
-            while (_running && step < maxStep && HimlabLogic.IsCaptchaVisible(region))
+            while (_running && step < maxStep)
             {
+                // Single capture reused for both visibility check and letter matching
+                using var raw = HimlabLogic.Capture(region);
+                if (!HimlabLogic.IsCaptchaVisible(raw)) break;
+
                 step++;
 
                 // Detect letter — up to 3 attempts
@@ -100,11 +104,10 @@ public sealed class HimlabModule : IModule
                 double ssd    = double.MaxValue;
                 for (int attempt = 0; attempt < 3; attempt++)
                 {
-                    using var raw       = HimlabLogic.Capture(region);
                     using var processed = HimlabLogic.Preprocess(raw);
                     (letter, ssd) = HimlabLogic.MatchLetter(processed, _templates);
                     if (letter != '?') break;
-                    if (attempt < 2) Thread.Sleep(100);
+                    if (attempt < 2) Thread.Sleep(50);
                 }
 
                 if (letter == '?')
@@ -121,7 +124,7 @@ public sealed class HimlabModule : IModule
                 HoldKey(_vkMap[letter], _cfg.HoldMs);
 
                 // Wait for transition animation
-                if (_running) Thread.Sleep(400);
+                if (_running) Thread.Sleep(_cfg.TransitionMs);
             }
 
             if (step >= maxStep)
@@ -221,6 +224,9 @@ public sealed class HimlabModule : IModule
 
         // Hold duration
         AddRow("Тривалість (мс)", IntBox(_cfg.HoldMs, v => { _cfg.HoldMs = v; _cfg.Save(); }));
+
+        // Transition delay
+        AddRow("Пауза між буквами (мс)", IntBox(_cfg.TransitionMs, v => { _cfg.TransitionMs = v; _cfg.Save(); }));
 
         // ── Templates section ────────────────────────────────────────────────
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(20) }); row++;

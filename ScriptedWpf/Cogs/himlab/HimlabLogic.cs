@@ -10,6 +10,9 @@ public static class HimlabLogic
 {
     public static readonly char[] Letters = { 'W', 'A', 'S', 'D' };
 
+    // Pre-extracted template pixel arrays — populated by LoadTemplates(), reused every match
+    static readonly Dictionary<char, long[]> _templatePixels = new();
+
     // ── Capture ───────────────────────────────────────────────────────────────
 
     // ── Captcha presence detection ────────────────────────────────────────────
@@ -20,7 +23,13 @@ public static class HimlabLogic
 
     public static unsafe bool IsCaptchaVisible(Rectangle region)
     {
-        using var bmp  = Capture(region);
+        using var bmp = Capture(region);
+        return IsCaptchaVisible(bmp);
+    }
+
+    // Overload: check already-captured bitmap (avoids duplicate screen capture)
+    public static unsafe bool IsCaptchaVisible(Bitmap bmp)
+    {
         var data = bmp.LockBits(
             new Rectangle(0, 0, bmp.Width, bmp.Height),
             ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
@@ -75,43 +84,39 @@ public static class HimlabLogic
 
     // ── Preprocessing ─────────────────────────────────────────────────────────
     // Grayscale → threshold (keep dark letter strokes) → resize to 64×64
+    // Single pass: nearest-neighbour downscale + threshold without intermediate bitmap.
 
     public static unsafe Bitmap Preprocess(Bitmap src)
     {
         const int OutSize   = 64;
         const int Threshold = 140; // darker than this → black (letter), rest → white
 
-        var thresholded = new Bitmap(src.Width, src.Height, PixelFormat.Format32bppArgb);
+        var out64 = new Bitmap(OutSize, OutSize, PixelFormat.Format32bppArgb);
         var sData = src.LockBits(
             new Rectangle(0, 0, src.Width, src.Height),
             ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        var tData = thresholded.LockBits(
-            new Rectangle(0, 0, thresholded.Width, thresholded.Height),
+        var dData = out64.LockBits(
+            new Rectangle(0, 0, OutSize, OutSize),
             ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
 
         byte* sp = (byte*)sData.Scan0;
-        byte* tp = (byte*)tData.Scan0;
+        byte* dp = (byte*)dData.Scan0;
 
-        for (int y = 0; y < src.Height; y++)
-        for (int x = 0; x < src.Width;  x++)
+        for (int y = 0; y < OutSize; y++)
+        for (int x = 0; x < OutSize; x++)
         {
-            byte* px  = sp + y * sData.Stride + x * 4;
+            // Nearest-neighbour source pixel
+            int sx = x * src.Width  / OutSize;
+            int sy = y * src.Height / OutSize;
+            byte* px  = sp + sy * sData.Stride + sx * 4;
             byte  gray = (byte)(px[2] * 0.299 + px[1] * 0.587 + px[0] * 0.114);
             byte  val  = gray < Threshold ? (byte)0 : (byte)255;
-            byte* dp  = tp + y * tData.Stride + x * 4;
-            dp[0] = val; dp[1] = val; dp[2] = val; dp[3] = 255;
+            byte* d   = dp + y * dData.Stride + x * 4;
+            d[0] = val; d[1] = val; d[2] = val; d[3] = 255;
         }
 
         src.UnlockBits(sData);
-        thresholded.UnlockBits(tData);
-
-        // Resize to 64×64
-        var out64 = new Bitmap(OutSize, OutSize, PixelFormat.Format32bppArgb);
-        using var g = Graphics.FromImage(out64);
-        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
-        g.DrawImage(thresholded, 0, 0, OutSize, OutSize);
-        thresholded.Dispose();
-
+        out64.UnlockBits(dData);
         return out64;
     }
 
@@ -119,6 +124,7 @@ public static class HimlabLogic
 
     public static Dictionary<char, Bitmap> LoadTemplates()
     {
+        _templatePixels.Clear();
         var result = new Dictionary<char, Bitmap>();
         string dir = HimlabConfig.TemplatesDir;
 
@@ -133,6 +139,9 @@ public static class HimlabLogic
             using var g = Graphics.FromImage(normalized);
             g.DrawImage(raw, 0, 0, 64, 64);
             result[c] = normalized;
+
+            // Pre-extract pixels so MatchLetter never has to LockBits a template
+            _templatePixels[c] = ExtractPixels(normalized);
         }
 
         return result;
@@ -152,39 +161,49 @@ public static class HimlabLogic
     public static (char letter, double ssd) MatchLetter(
         Bitmap processed64, Dictionary<char, Bitmap> templates)
     {
+        if (_templatePixels.Count == 0)
+            return ('?', double.MaxValue);
+
+        long[] testPx = ExtractPixels(processed64); // one LockBits for the test image
+
         char   best    = '?';
         double bestSsd = double.MaxValue;
 
-        foreach (var (c, tmpl) in templates)
+        foreach (var (c, tmplPx) in _templatePixels)
         {
-            double ssd = CalcSSD(processed64, tmpl);
+            if (!templates.ContainsKey(c)) continue;
+            double ssd = CalcSSD(testPx, tmplPx);
             if (ssd < bestSsd) { bestSsd = ssd; best = c; }
         }
 
         return (best, bestSsd);
     }
 
-    // Sum of squared differences on the blue channel (all channels identical after preprocess)
-    static unsafe double CalcSSD(Bitmap a, Bitmap b)
+    // Extract blue channel (all channels identical after preprocess) into a plain array
+    static unsafe long[] ExtractPixels(Bitmap bmp)
     {
-        var aData = a.LockBits(
+        var data = bmp.LockBits(
             new Rectangle(0, 0, 64, 64), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        var bData = b.LockBits(
-            new Rectangle(0, 0, 64, 64), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-
-        byte* ap = (byte*)aData.Scan0;
-        byte* bp = (byte*)bData.Scan0;
-        double sum = 0;
+        byte* p  = (byte*)data.Scan0;
+        var  px  = new long[64 * 64];
 
         for (int y = 0; y < 64; y++)
         for (int x = 0; x < 64; x++)
+            px[y * 64 + x] = p[y * data.Stride + x * 4]; // blue channel
+
+        bmp.UnlockBits(data);
+        return px;
+    }
+
+    // Sum of squared differences on pre-extracted pixel arrays
+    static double CalcSSD(long[] a, long[] b)
+    {
+        double sum = 0;
+        for (int i = 0; i < a.Length; i++)
         {
-            double diff = ap[y * aData.Stride + x * 4] - bp[y * bData.Stride + x * 4];
+            double diff = a[i] - b[i];
             sum += diff * diff;
         }
-
-        a.UnlockBits(aData);
-        b.UnlockBits(bData);
         return sum;
     }
 

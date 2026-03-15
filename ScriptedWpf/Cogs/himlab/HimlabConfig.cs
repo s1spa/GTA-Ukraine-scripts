@@ -7,10 +7,11 @@ namespace ScriptedWpf.Cogs.Himlab;
 
 public class HimlabConfig
 {
-    [JsonPropertyName("monitorIndex")] public int    MonitorIndex { get; set; } = -1;
-    [JsonPropertyName("holdMs")]       public int    HoldMs       { get; set; } = 2500;
-    [JsonPropertyName("centerYPct")]   public double CenterYPct   { get; set; } = 0.876;
-    [JsonPropertyName("captureSize")]  public int    CaptureSize  { get; set; } = 65;
+    [JsonPropertyName("monitorIndex")]  public int    MonitorIndex  { get; set; } = -1;
+    [JsonPropertyName("holdMs")]        public int    HoldMs        { get; set; } = 600;
+    [JsonPropertyName("transitionMs")]  public int    TransitionMs  { get; set; } = 150;
+    [JsonPropertyName("centerYPct")]    public double CenterYPct    { get; set; } = 0.876;
+    [JsonPropertyName("captureSize")]   public int    CaptureSize   { get; set; } = 65;
 
     static readonly JsonSerializerOptions _opts = new() { WriteIndented = true };
 
