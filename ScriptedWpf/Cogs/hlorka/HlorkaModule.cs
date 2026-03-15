@@ -71,55 +71,63 @@ public sealed class HlorkaModule : IModule
 
         while (_running)
         {
-            var screen = GetScreen();
-            var region = GetScanRegion(screen);
-            using var bmp = ScreenCapture.Capture(region);
-
-            // ── Фаза очікування ───────────────────────────────────────────────
-            if (!CheckVisible(bmp))
+            try
             {
-                // Логуємо MAD кожні ~3 секунди щоб можна було підібрати threshold
-                if (_template != null && ++logTick % 10 == 0)
+                var screen = GetScreen();
+                var region = GetScanRegion(screen);
+                using var bmp = ScreenCapture.Capture(region);
+
+                // ── Фаза очікування ───────────────────────────────────────────────
+                if (!CheckVisible(bmp))
                 {
-                    double mad = HlorkaScanner.GetMatchScore(bmp, _template);
-                    _log($"[очікування] MAD={mad:F1}  threshold={_cfg.MatchThreshold}");
-                }
-                Thread.Sleep(300);
-                continue;
-            }
-            logTick = 0;
-
-            // ── Активна фаза ──────────────────────────────────────────────────
-            _log("🟢 Міні-гру знайдено! Починаю...");
-            int missCount = 0;
-            const int MaxMiss = 8;
-
-            while (_running)
-            {
-                var s2 = GetScreen();
-                var r2 = GetScanRegion(s2);
-                using var frame = ScreenCapture.Capture(r2);
-
-                if (!CheckVisible(frame))
-                {
-                    if (++missCount >= MaxMiss) break;
-                    Thread.Sleep(50);
+                    // Логуємо MAD кожні ~3 секунди щоб можна було підібрати threshold
+                    if (_template != null && ++logTick % 10 == 0)
+                    {
+                        double mad = HlorkaScanner.GetMatchScore(bmp, _template);
+                        _log($"[очікування] MAD={mad:F1}  threshold={_cfg.MatchThreshold}");
+                    }
+                    Thread.Sleep(300);
                     continue;
                 }
-                missCount = 0;
+                logTick = 0;
 
-                int? ballY = HlorkaScanner.FindBallY(frame);
-                int? lineY = HlorkaScanner.FindLineY(frame);
+                // ── Активна фаза ──────────────────────────────────────────────────
+                _log("🟢 Міні-гру знайдено! Починаю...");
+                int missCount = 0;
+                const int MaxMiss = 8;
 
-                if (!ballY.HasValue) { Thread.Sleep(16); continue; }
+                while (_running)
+                {
+                    var s2 = GetScreen();
+                    var r2 = GetScanRegion(s2);
+                    using var frame = ScreenCapture.Capture(r2);
 
-                bool needTap = !lineY.HasValue || (lineY.Value - ballY.Value) > _cfg.Deadband;
-                if (needTap) TapSpace();
-                else         Thread.Sleep(16);
+                    if (!CheckVisible(frame))
+                    {
+                        if (++missCount >= MaxMiss) break;
+                        Thread.Sleep(50);
+                        continue;
+                    }
+                    missCount = 0;
+
+                    int? ballY = HlorkaScanner.FindBallY(frame);
+                    int? lineY = HlorkaScanner.FindLineY(frame);
+
+                    if (!ballY.HasValue) { Thread.Sleep(16); continue; }
+
+                    bool needTap = !lineY.HasValue || (lineY.Value - ballY.Value) > _cfg.Deadband;
+                    if (needTap) TapSpace();
+                    else         Thread.Sleep(16);
+                }
+
+                if (_running)
+                    _log("⏸ Міні-гра завершена. Очікую наступну...");
             }
-
-            if (_running)
-                _log("⏸ Міні-гра завершена. Очікую наступну...");
+            catch (Exception ex)
+            {
+                _log($"[Хлорка] ⚠ Помилка: {ex.Message} — повторюю через 1с");
+                Thread.Sleep(1000);
+            }
         }
 
         _log("Хлорка вимкнена.");
@@ -284,29 +292,42 @@ public sealed class HlorkaModule : IModule
 
             new Thread(() =>
             {
-                for (int sec = 3; sec >= 1; sec--)
+                try
                 {
-                    int s = sec;
-                    Application.Current.Dispatcher.Invoke(
-                        () => templateLbl.Text = $"Повернись у гру (міні-гра має бути активна)... {s}");
-                    Thread.Sleep(1000);
+                    for (int sec = 3; sec >= 1; sec--)
+                    {
+                        int s = sec;
+                        Application.Current.Dispatcher.Invoke(
+                            () => templateLbl.Text = $"Повернись у гру (міні-гра має бути активна)... {s}");
+                        Thread.Sleep(1000);
+                    }
+
+                    var screen = GetScreen();
+                    var region = GetScanRegion(screen);
+                    using var bmp = ScreenCapture.Capture(region);
+                    HlorkaScanner.SaveTemplate(bmp);
+
+                    // Перезавантажуємо еталон — спочатку новий, потім dispose старого
+                    var oldTemplate = _template;
+                    _template = HlorkaScanner.LoadTemplate();
+                    oldTemplate?.Dispose();
+
+                    Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        templateLbl.Text       = "✅ Еталон збережено!";
+                        templateStatus.Text    = "Еталон: ✅ є";
+                        saveTemplateBtn.IsEnabled = true;
+                    });
                 }
-
-                var screen = GetScreen();
-                var region = GetScanRegion(screen);
-                using var bmp = ScreenCapture.Capture(region);
-                HlorkaScanner.SaveTemplate(bmp);
-
-                // Перезавантажуємо еталон
-                _template?.Dispose();
-                _template = HlorkaScanner.LoadTemplate();
-
-                Application.Current.Dispatcher.Invoke(() =>
+                catch (Exception ex)
                 {
-                    templateLbl.Text       = "✅ Еталон збережено!";
-                    templateStatus.Text    = "Еталон: ✅ є";
-                    saveTemplateBtn.IsEnabled = true;
-                });
+                    Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        templateLbl.Text      = $"❌ Помилка: {ex.Message}";
+                        saveTemplateBtn.IsEnabled = true;
+                    });
+                    _log($"[Хлорка] Помилка збереження еталону: {ex.Message}");
+                }
             }) { IsBackground = true }.Start();
         };
 

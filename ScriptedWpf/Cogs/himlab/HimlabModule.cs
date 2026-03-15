@@ -78,59 +78,67 @@ public sealed class HimlabModule : IModule
 
         while (_running)
         {
-            var region = HimlabLogic.GetCaptureRegion(_cfg.MonitorIndex, _cfg);
-            // ── Waiting phase: poll until captcha appears ──────────────────
-            if (!HimlabLogic.IsCaptchaVisible(region))
+            try
             {
-                Thread.Sleep(300);
-                continue;
-            }
-
-            // ── Solving phase ──────────────────────────────────────────────
-            _log("[Хімлаб] Капча виявлена! Починаю прохід...");
-            int step    = 0;
-            int maxStep = 15;
-
-            while (_running && step < maxStep)
-            {
-                // Single capture reused for both visibility check and letter matching
-                using var raw = HimlabLogic.Capture(region);
-                if (!HimlabLogic.IsCaptchaVisible(raw)) break;
-
-                step++;
-
-                // Detect letter — up to 3 attempts
-                char   letter = '?';
-                double ssd    = double.MaxValue;
-                for (int attempt = 0; attempt < 3; attempt++)
+                var region = HimlabLogic.GetCaptureRegion(_cfg.MonitorIndex, _cfg);
+                // ── Waiting phase: poll until captcha appears ──────────────────
+                if (!HimlabLogic.IsCaptchaVisible(region))
                 {
-                    using var processed = HimlabLogic.Preprocess(raw);
-                    (letter, ssd) = HimlabLogic.MatchLetter(processed, _templates);
-                    if (letter != '?') break;
-                    if (attempt < 2) Thread.Sleep(50);
-                }
-
-                if (letter == '?')
-                {
-                    _log($"[{step}] ❌ Не вдалося розпізнати літеру — пропускаю");
                     Thread.Sleep(300);
                     continue;
                 }
 
-                double confidence = (1.0 - ssd / HimlabLogic.MaxSSD) * 100.0;
-                string conf = confidence < 70.0 ? $" ⚠ довіра {confidence:F0}%" : "";
-                _log($"[{step}] ✅ [{letter}] — тримаю {_cfg.HoldMs}мс{conf}");
+                // ── Solving phase ──────────────────────────────────────────────
+                _log("[Хімлаб] Капча виявлена! Починаю прохід...");
+                int step    = 0;
+                int maxStep = 15;
 
-                HoldKey(_vkMap[letter], _cfg.HoldMs);
+                while (_running && step < maxStep)
+                {
+                    // Single capture reused for both visibility check and letter matching
+                    using var raw = HimlabLogic.Capture(region);
+                    if (!HimlabLogic.IsCaptchaVisible(raw)) break;
 
-                // Wait for transition animation
-                if (_running) Thread.Sleep(_cfg.TransitionMs);
+                    step++;
+
+                    // Detect letter — up to 3 attempts
+                    char   letter = '?';
+                    double ssd    = double.MaxValue;
+                    for (int attempt = 0; attempt < 3; attempt++)
+                    {
+                        using var processed = HimlabLogic.Preprocess(raw);
+                        (letter, ssd) = HimlabLogic.MatchLetter(processed, _templates);
+                        if (letter != '?') break;
+                        if (attempt < 2) Thread.Sleep(50);
+                    }
+
+                    if (letter == '?')
+                    {
+                        _log($"[{step}] ❌ Не вдалося розпізнати літеру — пропускаю");
+                        Thread.Sleep(300);
+                        continue;
+                    }
+
+                    double confidence = (1.0 - ssd / HimlabLogic.MaxSSD) * 100.0;
+                    string conf = confidence < 70.0 ? $" ⚠ довіра {confidence:F0}%" : "";
+                    _log($"[{step}] ✅ [{letter}] — тримаю {_cfg.HoldMs}мс{conf}");
+
+                    HoldKey(_vkMap[letter], _cfg.HoldMs);
+
+                    // Wait for transition animation
+                    if (_running) Thread.Sleep(_cfg.TransitionMs);
+                }
+
+                if (step >= maxStep)
+                    _log($"[Хімлаб] ⚠ Досягнуто ліміт {maxStep} кроків — перевір гру");
+                else
+                    _log($"[Хімлаб] Капча пройдена за {step} кроків ✅ Очікую наступну...");
             }
-
-            if (step >= maxStep)
-                _log($"[Хімлаб] ⚠ Досягнуто ліміт {maxStep} кроків — перевір гру");
-            else
-                _log($"[Хімлаб] Капча пройдена за {step} кроків ✅ Очікую наступну...");
+            catch (Exception ex)
+            {
+                _log($"[Хімлаб] ⚠ Помилка захоплення екрану: {ex.Message} — повторюю через 1с");
+                Thread.Sleep(1000);
+            }
         }
 
         _log("[Хімлаб] Фоновий режим вимкнено.");
