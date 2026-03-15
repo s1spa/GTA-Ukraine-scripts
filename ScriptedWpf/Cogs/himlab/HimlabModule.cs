@@ -1,0 +1,326 @@
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using ScriptedWpf.Core;
+
+namespace ScriptedWpf.Cogs.Himlab;
+
+public sealed class HimlabModule : IModule
+{
+    static readonly Dictionary<char, ushort> _vkMap = new()
+    {
+        ['W'] = 0x57, ['A'] = 0x41, ['S'] = 0x53, ['D'] = 0x44,
+    };
+
+    // SSD above this = low confidence warning (~30% pixels different)
+    static readonly double BadSsdThreshold = HimlabLogic.MaxSSD * 0.30;
+
+    volatile bool               _running;
+    Action<string>              _log       = Console.WriteLine;
+    HimlabConfig                _cfg       = HimlabConfig.Load();
+    Dictionary<char, System.Drawing.Bitmap> _templates = new();
+
+    // ── IModule ───────────────────────────────────────────────────────────────
+    public string Id        => "himlab";
+    public bool   IsRunning => _running;
+
+    public event Action? StateChanged;
+
+    public void Initialize(Action<string> log)
+    {
+        _log      = log;
+        _templates = HimlabLogic.LoadTemplates();
+    }
+
+    public void Start()
+    {
+        if (_running) return;
+
+        if (_templates.Count < 4)
+        {
+            _log($"[Хімлаб] ❌ Не всі шаблони готові ({_templates.Count}/4). Налаштуй шаблони в налаштуваннях.");
+            return;
+        }
+
+        _running = true;
+        new Thread(Run) { IsBackground = true }.Start();
+        StateChanged?.Invoke();
+    }
+
+    public void Stop()
+    {
+        if (!_running) return;
+        _running = false;
+        _log("[Хімлаб] Зупинено.");
+        StateChanged?.Invoke();
+    }
+
+    public void RegisterHotkeys(HotkeyService hotkeys)
+    {
+        hotkeys.Register(0, (uint)System.Windows.Forms.Keys.F8, () =>
+        {
+            if (IsRunning) Stop();
+            else Start();
+        });
+    }
+
+    public FrameworkElement? GetSettingsView() => BuildSettings();
+
+    // ── Background loop ───────────────────────────────────────────────────────
+    void Run()
+    {
+        _log("[Хімлаб] Фоновий режим увімкнено. Очікую капчу...");
+        var region = HimlabLogic.GetCaptureRegion(_cfg.MonitorIndex, _cfg);
+
+        while (_running)
+        {
+            // ── Waiting phase: poll until captcha appears ──────────────────
+            if (!HimlabLogic.IsCaptchaVisible(region))
+            {
+                Thread.Sleep(300);
+                continue;
+            }
+
+            // ── Solving phase ──────────────────────────────────────────────
+            _log("[Хімлаб] Капча виявлена! Починаю прохід...");
+            int step    = 0;
+            int maxStep = 15;
+
+            while (_running && step < maxStep && HimlabLogic.IsCaptchaVisible(region))
+            {
+                step++;
+
+                // Detect letter — up to 3 attempts
+                char   letter = '?';
+                double ssd    = double.MaxValue;
+                for (int attempt = 0; attempt < 3; attempt++)
+                {
+                    using var raw       = HimlabLogic.Capture(region);
+                    using var processed = HimlabLogic.Preprocess(raw);
+                    (letter, ssd) = HimlabLogic.MatchLetter(processed, _templates);
+                    if (letter != '?') break;
+                    if (attempt < 2) Thread.Sleep(100);
+                }
+
+                if (letter == '?')
+                {
+                    _log($"[{step}] ❌ Не вдалося розпізнати літеру — пропускаю");
+                    Thread.Sleep(300);
+                    continue;
+                }
+
+                double confidence = (1.0 - ssd / HimlabLogic.MaxSSD) * 100.0;
+                string conf = confidence < 70.0 ? $" ⚠ довіра {confidence:F0}%" : "";
+                _log($"[{step}] ✅ [{letter}] — тримаю {_cfg.HoldMs}мс{conf}");
+
+                HoldKey(_vkMap[letter], _cfg.HoldMs);
+
+                // Wait for transition animation
+                if (_running) Thread.Sleep(400);
+            }
+
+            if (step >= maxStep)
+                _log($"[Хімлаб] ⚠ Досягнуто ліміт {maxStep} кроків — перевір гру");
+            else
+                _log($"[Хімлаб] Капча пройдена за {step} кроків ✅ Очікую наступну...");
+        }
+
+        _log("[Хімлаб] Фоновий режим вимкнено.");
+        _running = false;
+        StateChanged?.Invoke();
+    }
+
+    static void HoldKey(ushort vk, int holdMs)
+    {
+        int sz = Marshal.SizeOf<WinApi.INPUT>();
+
+        var down = new WinApi.INPUT
+        {
+            type = WinApi.INPUT_KEYBOARD,
+            u    = new WinApi.INPUTUNION { ki = new WinApi.KEYBDINPUT { wVk = vk } }
+        };
+        var up = new WinApi.INPUT
+        {
+            type = WinApi.INPUT_KEYBOARD,
+            u    = new WinApi.INPUTUNION { ki = new WinApi.KEYBDINPUT { wVk = vk, dwFlags = WinApi.KEYEVENTF_KEYUP } }
+        };
+
+        WinApi.SendInput(1, [down], sz);
+        Thread.Sleep(holdMs);
+        WinApi.SendInput(1, [up], sz);
+    }
+
+    // ── Settings View ─────────────────────────────────────────────────────────
+    FrameworkElement BuildSettings()
+    {
+        var accent   = (Brush)Application.Current.Resources["AccentBrush"];
+        var textSec  = (Brush)Application.Current.Resources["TextSecondaryBrush"];
+        var textDim  = (Brush)Application.Current.Resources["TextDimBrush"];
+        var borderB  = (Brush)Application.Current.Resources["BorderBrush"];
+
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        int row = 0;
+
+        void AddRow(string label, FrameworkElement input)
+        {
+            grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(36) });
+            var lbl = new TextBlock
+            {
+                Text = label, Foreground = textSec,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 12, 0),
+            };
+            Grid.SetRow(lbl, row); Grid.SetColumn(lbl, 0);
+            input.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetRow(input, row); Grid.SetColumn(input, 1);
+            grid.Children.Add(lbl); grid.Children.Add(input);
+            row++;
+        }
+
+        // Monitor
+        var monCb = new ComboBox { Width = 220, Height = 28 };
+        monCb.Items.Add("Авто");
+        var screens = System.Windows.Forms.Screen.AllScreens;
+        for (int i = 0; i < screens.Length; i++)
+        {
+            string friendly = WinApi.GetMonitorFriendlyName(screens[i].DeviceName);
+            if (string.IsNullOrWhiteSpace(friendly) || friendly == screens[i].DeviceName)
+                friendly = $"Дисплей {i + 1}";
+            monCb.Items.Add($"{friendly}  {screens[i].Bounds.Width}×{screens[i].Bounds.Height}");
+        }
+        monCb.SelectedIndex = Math.Clamp(_cfg.MonitorIndex + 1, 0, monCb.Items.Count - 1);
+        monCb.SelectionChanged += (_, _) => { _cfg.MonitorIndex = monCb.SelectedIndex - 1; _cfg.Save(); };
+        AddRow("Монітор", monCb);
+
+        // Hold duration
+        AddRow("Тривалість (мс)", IntBox(_cfg.HoldMs, v => { _cfg.HoldMs = v; _cfg.Save(); }));
+
+        // ── Templates section ────────────────────────────────────────────────
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(20) }); row++;
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var tmplLbl = new TextBlock
+        {
+            Text = "ШАБЛОНИ  (F8 = старт)",
+            FontSize = 9, FontWeight = FontWeights.Bold,
+            Foreground = textDim,
+            Margin = new Thickness(0, 4, 0, 8),
+        };
+        Grid.SetRow(tmplLbl, row); Grid.SetColumnSpan(tmplLbl, 2);
+        grid.Children.Add(tmplLbl);
+        row++;
+
+        // Hint text
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var hint = new TextBlock
+        {
+            Text = "Відкрий гру, дочекайся потрібної літери\nта натисни «Захопити» — є 3 секунди.",
+            Foreground = textDim, FontSize = 10,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 10),
+        };
+        Grid.SetRow(hint, row); Grid.SetColumnSpan(hint, 2);
+        grid.Children.Add(hint);
+        row++;
+
+        // One row per letter
+        foreach (char letter in HimlabLogic.Letters)
+        {
+            grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(36) });
+
+            bool hasTemplate = _templates.ContainsKey(letter);
+
+            var statusText = new TextBlock
+            {
+                Text       = hasTemplate ? "✅ Готово" : "❌ Немає",
+                Foreground = hasTemplate ? accent : textDim,
+                FontSize   = 12,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+
+            var captureBtn = new Button
+            {
+                Content = $"[{letter}]  Захопити",
+                Height  = 26,
+                Padding = new Thickness(10, 0, 10, 0),
+                Cursor  = System.Windows.Input.Cursors.Hand,
+                FontSize = 11,
+            };
+
+            char captured = letter; // capture for closure
+            captureBtn.Click += async (_, _) =>
+            {
+                captureBtn.IsEnabled = false;
+                for (int i = 3; i > 0; i--)
+                {
+                    captureBtn.Content = $"[{captured}]  {i}...";
+                    await Task.Delay(1000);
+                }
+
+                captureBtn.Content = $"[{captured}]  Захоплення...";
+
+                // Minimize app so game is visible
+                var win = Application.Current.MainWindow;
+                win.WindowState = WindowState.Minimized;
+                await Task.Delay(300);
+
+                try
+                {
+                    var region = HimlabLogic.GetCaptureRegion(_cfg.MonitorIndex, _cfg);
+                    using var raw       = HimlabLogic.Capture(region);
+                    using var processed = HimlabLogic.Preprocess(raw);
+                    HimlabLogic.SaveTemplate(captured, processed);
+
+                    // Reload all templates
+                    foreach (var bmp in _templates.Values) bmp.Dispose();
+                    _templates = HimlabLogic.LoadTemplates();
+
+                    statusText.Text       = "✅ Готово";
+                    statusText.Foreground = accent;
+                    _log($"[Хімлаб] Шаблон [{captured}] збережено");
+                }
+                catch (Exception ex)
+                {
+                    _log($"[Хімлаб] Помилка захоплення [{captured}]: {ex.Message}");
+                }
+
+                win.WindowState = WindowState.Normal;
+                win.Activate();
+                captureBtn.Content   = $"[{captured}]  Захопити";
+                captureBtn.IsEnabled = true;
+            };
+
+            // Layout: [status] ............. [button]
+            var letterRow = new DockPanel { LastChildFill = false };
+            DockPanel.SetDock(statusText,  Dock.Left);
+            DockPanel.SetDock(captureBtn,  Dock.Right);
+            letterRow.Children.Add(statusText);
+            letterRow.Children.Add(captureBtn);
+
+            Grid.SetRow(letterRow, row); Grid.SetColumnSpan(letterRow, 2);
+            grid.Children.Add(letterRow);
+            row++;
+        }
+
+        return grid;
+    }
+
+    static TextBox IntBox(int initial, Action<int> onChange)
+    {
+        var tb = new TextBox { Text = initial.ToString(), Width = 90, Height = 26 };
+        tb.LostFocus += (_, _) =>
+        {
+            if (int.TryParse(tb.Text, out int v)) onChange(v);
+            else tb.Text = initial.ToString();
+        };
+        return tb;
+    }
+}
