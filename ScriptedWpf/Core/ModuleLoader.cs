@@ -44,6 +44,7 @@ public static class ModuleLoader
         "wires"   => new Cogs.Wires.WiresModule(),
         "antiafk" => new Cogs.AntiAfk.AntiAfkModule(),
         "himlab"  => new Cogs.Himlab.HimlabModule(),
+        "hlorka"  => new Cogs.Hlorka.HlorkaModule(),
         _         => null,
     };
 }
