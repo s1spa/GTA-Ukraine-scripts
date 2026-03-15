@@ -62,7 +62,7 @@ public sealed class HimlabModule : IModule
 
     public void RegisterHotkeys(HotkeyService hotkeys)
     {
-        hotkeys.Register(0, (uint)System.Windows.Forms.Keys.F8, () =>
+        hotkeys.Register(0, (uint)System.Windows.Forms.Keys.F9, () =>
         {
             if (IsRunning) Stop();
             else Start();

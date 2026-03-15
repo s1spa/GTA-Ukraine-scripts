@@ -49,16 +49,16 @@ public sealed class CdaModule : IModule
 
     public void RegisterHotkeys(HotkeyService hotkeys)
     {
-        hotkeys.Register(0, (uint)System.Windows.Forms.Keys.F9, () =>
+        hotkeys.Register(0, (uint)System.Windows.Forms.Keys.F7, () =>
         {
             if (IsRunning)
             {
-                _log("F9 → ВИМКНЕНО");
+                _log("F7 → ВИМКНЕНО");
                 Stop();
             }
             else
             {
-                _log("F9 → УВІМКНЕНО");
+                _log("F7 → УВІМКНЕНО");
                 Start();
             }
         });

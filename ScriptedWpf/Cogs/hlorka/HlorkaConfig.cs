@@ -20,6 +20,10 @@ public class HlorkaConfig
     // Мертва зона в пікселях: в межах цього діапазону нічого не робимо
     [JsonPropertyName("deadband")] public int Deadband { get; set; } = 4;
 
+    // Поріг схожості з еталоном (MAD, 0–255): менше = суворіше
+    // Логуй MAD в терміналі і підбери під своє значення
+    [JsonPropertyName("matchThreshold")] public int MatchThreshold { get; set; } = 30;
+
     static readonly JsonSerializerOptions _opts = new() { WriteIndented = true };
 
     static string FilePath => Path.Combine(
