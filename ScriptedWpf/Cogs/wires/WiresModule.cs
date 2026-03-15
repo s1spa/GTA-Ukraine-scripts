@@ -130,6 +130,33 @@ public sealed class WiresModule : IModule
         };
         stack.Children.Add(resetBtn);
 
+        // Швидкість курсору
+        var speedRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
+        speedRow.Children.Add(new TextBlock
+        {
+            Text = "Швидкість drag (мс/крок):", Foreground = textSec,
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0)
+        });
+        var speedBox = new TextBox
+        {
+            Width = 50, Height = 26, Text = _cfg.DragStepMs.ToString(),
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+        speedBox.LostFocus += (_, _) =>
+        {
+            if (int.TryParse(speedBox.Text, out int v) && v >= 1 && v <= 100)
+            { _cfg.DragStepMs = v; _cfg.Save(); }
+            else
+                speedBox.Text = _cfg.DragStepMs.ToString();
+        };
+        speedRow.Children.Add(speedBox);
+        speedRow.Children.Add(new TextBlock
+        {
+            Text = "  (менше = швидше, 1–100)", Foreground = textSec,
+            FontSize = 10, VerticalAlignment = VerticalAlignment.Center
+        });
+        stack.Children.Add(speedRow);
+
         calibBtn.Click += (_, _) =>
         {
             calibBtn.IsEnabled = false;
@@ -1271,33 +1298,38 @@ public sealed class WiresModule : IModule
     {
         try
         {
-            _log("Wire Connector запущено. Очікую міні-гру...");
+            _log("Wire Connector запущено. Очікую міні-гру... (F8 — зупинити)");
 
             while (_state == BotState.Running)
             {
                 var screen = GetScreen();
                 using var bmp = ScreenCapture.Capture(screen);
 
-                // Сканування проводів по кольору (рандомні позиції кожен раунд)
-                var topWires    = WireScanner.FindTopWireTips(bmp, screen, _cfg);
-                var bottomWires = WireScanner.FindBottomWireTips(bmp, screen, _cfg);
-                var allWires    = topWires.Concat(bottomWires).ToList();
+                // ── Фаза очікування: тихо чекаємо міні-гру ───────────────────
+                var topWires = WireScanner.FindTopWireTips(bmp, screen, _cfg);
+                var botWires = WireScanner.FindBottomWireTips(bmp, screen, _cfg);
+                if (topWires.Count + botWires.Count < 3)
+                {
+                    Thread.Sleep(400);
+                    continue;
+                }
 
-                // Сканування кілець
+                // ── Активна фаза: міні-гра знайдена ──────────────────────────
+                _log("🔌 Міні-гру знайдено! Сканую...");
+
+                var allWires = topWires.Concat(botWires).ToList();
                 var (topRings, bottomRings) = WireScanner.FindRings(bmp, _cfg);
                 var allRings = topRings.Concat(bottomRings).ToList();
 
-                _log($"Проводи: верх={topWires.Count} [{string.Join(",", topWires.Select(w => w.color))}] | низ={bottomWires.Count} [{string.Join(",", bottomWires.Select(w => w.color))}]");
+                _log($"Проводи: верх={topWires.Count} [{string.Join(",", topWires.Select(w => w.color))}] | низ={botWires.Count} [{string.Join(",", botWires.Select(w => w.color))}]");
                 _log($"Кільця:  верх={topRings.Count} [{string.Join(",", topRings.Select(r => r.color))}] | низ={bottomRings.Count} [{string.Join(",", bottomRings.Select(r => r.color))}]");
 
-                // Перетворюємо список проводів у словник колір→точка
                 var tipPoints = allWires
                     .GroupBy(w => w.color)
                     .ToDictionary(g => g.Key, g => g.First().pos);
 
                 SaveDebugImage(bmp, tipPoints, topRings, bottomRings, _debugFrame++, _cfg);
 
-                // Готово якщо знайдено 10 проводів і 10 кілець без дублікатів
                 bool wiresReady = tipPoints.Count == 10;
                 bool ringsReady = allRings.Count >= 10 || tipPoints.Keys.All(wc => allRings.Any(r => r.color == wc));
 
@@ -1305,10 +1337,10 @@ public sealed class WiresModule : IModule
                 {
                     _log("Починаю з'єднання...");
                     ConnectWires(tipPoints, allRings, screen);
-                    _log("Готово! 🔌");
-                    _state = BotState.Idle;
-                    StateChanged?.Invoke();
-                    return;
+                    _log("Готово! 🔌 Очікую наступну міні-гру...");
+                    // не зупиняємось — чекаємо наступну
+                    Thread.Sleep(2000); // пауза щоб не спрацювало одразу знову
+                    continue;
                 }
 
                 Thread.Sleep(500);
@@ -1356,7 +1388,7 @@ public sealed class WiresModule : IModule
             int toY   = screen.Y + ringMatch.center.Y;
 
             _log($"🔌 {wireColor}: ({fromX},{fromY}) → ({toX},{toY})");
-            DragInput.Drag(fromX, fromY, toX, toY, _log);
+            DragInput.Drag(fromX, fromY, toX, toY, _log, _cfg.DragStepMs);
         }
     }
 

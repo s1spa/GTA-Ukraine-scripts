@@ -75,10 +75,10 @@ public sealed class HimlabModule : IModule
     void Run()
     {
         _log("[Хімлаб] Фоновий режим увімкнено. Очікую капчу...");
-        var region = HimlabLogic.GetCaptureRegion(_cfg.MonitorIndex, _cfg);
 
         while (_running)
         {
+            var region = HimlabLogic.GetCaptureRegion(_cfg.MonitorIndex, _cfg);
             // ── Waiting phase: poll until captcha appears ──────────────────
             if (!HimlabLogic.IsCaptchaVisible(region))
             {

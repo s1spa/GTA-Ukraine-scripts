@@ -422,7 +422,7 @@ static class WireScanner
 // ── Drag Input ────────────────────────────────────────────────────────────────
 static class DragInput
 {
-    public static void Drag(int fromX, int fromY, int toX, int toY, Action<string> log)
+    public static void Drag(int fromX, int fromY, int toX, int toY, Action<string> log, int stepDelayMs = 9)
     {
         WinApi.SetCursorPos(fromX, fromY);
         Thread.Sleep(25);
@@ -435,7 +435,7 @@ static class DragInput
             int x = fromX + (toX - fromX) * i / steps;
             int y = fromY + (toY - fromY) * i / steps;
             WinApi.SetCursorPos(x, y);
-            Thread.Sleep(9);
+            Thread.Sleep(Math.Max(1, stepDelayMs));
         }
 
         Thread.Sleep(25);

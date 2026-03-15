@@ -50,6 +50,9 @@ public class WiresConfig
     // Ring: більше бо кільця більш варіативні. Рекомендовано: 800–2000
     [JsonPropertyName("ringThreshold")] public int RingThreshold { get; set; } = 1500;
 
+    // Затримка між кроками drag (мс на крок). Менше = швидше. Рекомендовано: 5–20
+    [JsonPropertyName("dragStepMs")] public int DragStepMs { get; set; } = 9;
+
     // Зразки кольорів (ключ = назва WireColor: "Red", "Blue", тощо)
     [JsonPropertyName("colorSamples")]
     public Dictionary<string, ColorSamples> ColorSamples { get; set; } = new();
