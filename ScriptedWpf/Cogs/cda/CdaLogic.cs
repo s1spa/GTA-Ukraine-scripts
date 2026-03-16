@@ -270,7 +270,7 @@ static class OrderScanner
         {
             int price = ReadPrice(bmp, anchor, priceEng);
             var (tonnage, level, orderType) = ReadBadge(bmp, anchor, badgeEng, ukrEng);
-            int btnX = screen.X + anchor.X + 130, btnY = screen.Y + anchor.Y + 140;
+            int btnX = screen.X + anchor.X + 130, btnY = screen.Y + anchor.Y + 50;
             cards.Add(new OrderCard { Anchor = anchor, PricePerKm = price, Tonnage = tonnage, Level = level, Type = orderType, ClickPoint = new Point(btnX, btnY) });
         }
         return cards;
