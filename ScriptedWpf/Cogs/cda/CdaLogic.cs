@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Globalization;
@@ -290,6 +291,65 @@ static class OrderScanner
         return m.Success && int.TryParse(m.Value, out int p) ? p : 0;
     }
 
+    static readonly double[] _validTons = { 0.5, 1.5, 3.0, 5.0 };
+    static Dictionary<double, Bitmap>? _tonTemplates;
+
+    static Dictionary<double, Bitmap> LoadTonTemplates()
+    {
+        var d = new Dictionary<double, Bitmap>();
+        string dir = Path.Combine("Cogs", "cda", "ton_templates");
+        if (!Directory.Exists(dir)) return d;
+        foreach (double t in _validTons)
+        {
+            string path = Path.Combine(dir, $"{t}.png");
+            if (File.Exists(path)) d[t] = new Bitmap(path);
+        }
+        return d;
+    }
+
+    static unsafe double TemplateSSD(Bitmap source, Bitmap tmpl)
+    {
+        if (tmpl.Width > source.Width || tmpl.Height > source.Height) return double.MaxValue;
+        var srcData = source.LockBits(new Rectangle(0, 0, source.Width, source.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        var tplData = tmpl.LockBits(new Rectangle(0, 0, tmpl.Width, tmpl.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        double minSSD = double.MaxValue;
+        try
+        {
+            byte* s = (byte*)srcData.Scan0, t = (byte*)tplData.Scan0;
+            for (int y = 0; y <= source.Height - tmpl.Height; y++)
+            for (int x = 0; x <= source.Width - tmpl.Width; x++)
+            {
+                double ssd = 0;
+                for (int ty = 0; ty < tmpl.Height; ty++)
+                {
+                    byte* sRow = s + (y + ty) * srcData.Stride + x * 4;
+                    byte* tRow = t + ty * tplData.Stride;
+                    for (int tx = 0; tx < tmpl.Width; tx++, sRow += 4, tRow += 4)
+                    {
+                        int dr = sRow[2] - tRow[2], dg = sRow[1] - tRow[1], db = sRow[0] - tRow[0];
+                        ssd += dr*dr + dg*dg + db*db;
+                    }
+                }
+                if (ssd < minSSD) minSSD = ssd;
+            }
+        }
+        finally { source.UnlockBits(srcData); tmpl.UnlockBits(tplData); }
+        return minSSD;
+    }
+
+    static double MatchTonnageByTemplate(Bitmap crop)
+    {
+        _tonTemplates ??= LoadTonTemplates();
+        if (_tonTemplates.Count == 0) return 0;
+        double bestTon = 0, minSSD = double.MaxValue;
+        foreach (var (t, tmpl) in _tonTemplates)
+        {
+            double ssd = TemplateSSD(crop, tmpl);
+            if (ssd < minSSD) { minSSD = ssd; bestTon = t; }
+        }
+        return bestTon;
+    }
+
     static (double ton, int lvl, string type) ReadBadge(Bitmap bmp, Point anchor, TesseractEngine badgeEng, TesseractEngine ukrEng)
     {
         var r = new Rectangle(anchor.X - 10, anchor.Y - 55, 320, 45);
@@ -300,8 +360,17 @@ static class OrderScanner
 
         string eng = DoOcr(badgeEng, up).Replace("S","5").Replace("s","5").Replace("O","0").Replace("o","0").ToUpper();
         double ton = 0; int lvl = 1;
-        var tm = Regex.Match(eng, @"(\d+[.,]?\d*)\s*[tT]");
-        if (tm.Success) double.TryParse(tm.Groups[1].Value.Replace(',','.'), NumberStyles.Any, CultureInfo.InvariantCulture, out ton);
+
+        // Template matching — основний метод
+        ton = MatchTonnageByTemplate(crop);
+        if (ton == 0)
+        {
+            // Fallback: OCR
+            var tm = Regex.Match(eng, @"(\d+[.,]?\d*)\s*[tT]");
+            if (tm.Success) double.TryParse(tm.Groups[1].Value.Replace(',','.'), NumberStyles.Any, CultureInfo.InvariantCulture, out ton);
+            Console.WriteLine($"[CDA] ⚠️ Template matching не знайшов тоннаж — використано OCR ({ton}т). Перевір папку ton_templates/");
+        }
+
         var lm = Regex.Match(eng, @"(\d+)\s*[lL]");
         if (lm.Success) int.TryParse(lm.Groups[1].Value, out lvl);
 
