@@ -14,9 +14,10 @@ namespace ScriptedWpf.Cogs.Hlorka;
 public sealed class HlorkaModule : IModule
 {
     volatile bool  _running;
-    Action<string> _log      = Console.WriteLine;
-    HlorkaConfig   _cfg      = HlorkaConfig.Load();
-    Bitmap?        _template = null;
+    Action<string> _log          = Console.WriteLine;
+    HlorkaConfig   _cfg          = HlorkaConfig.Load();
+    Bitmap?        _template     = null;
+    Bitmap?        _ballTemplate = null;
 
     const ushort VK_SPACE = 0x20;
 
@@ -29,10 +30,13 @@ public sealed class HlorkaModule : IModule
 
     public void Initialize(Action<string> log)
     {
-        _log      = log;
-        _template = HlorkaScanner.LoadTemplate();
-        if (_template != null) _log("Хлорка: еталон завантажено ✅");
-        else                   _log("Хлорка: еталон не знайдено — збережи приклад у налаштуваннях");
+        _log          = log;
+        _template     = HlorkaScanner.LoadTemplate();
+        _ballTemplate = HlorkaScanner.LoadBallTemplate();
+
+        if (_ballTemplate != null) _log("Хлорка: Ball.png завантажено ✅");
+        else                       _log("Хлорка: Ball.png не знайдено в папці Cogs/hlorka/");
+        if (_template != null)     _log("Хлорка: MAD-еталон завантажено ✅");
     }
 
     public void Start()
@@ -110,7 +114,7 @@ public sealed class HlorkaModule : IModule
                     }
                     missCount = 0;
 
-                    int? ballY = HlorkaScanner.FindBallY(frame);
+                    int? ballY = FindBall(frame);
                     int? lineY = HlorkaScanner.FindLineY(frame);
 
                     if (!ballY.HasValue) { Thread.Sleep(16); continue; }
@@ -133,12 +137,14 @@ public sealed class HlorkaModule : IModule
         _log("Хлорка вимкнена.");
     }
 
-    bool CheckVisible(Bitmap bmp)
+    int? FindBall(Bitmap bmp)
     {
-        if (_template != null)
-            return HlorkaScanner.MatchesTemplate(bmp, _template, _cfg.MatchThreshold);
-        return HlorkaScanner.FindBallY(bmp).HasValue;
+        if (_ballTemplate != null)
+            return HlorkaScanner.FindBallByTemplate(bmp, _ballTemplate);
+        return HlorkaScanner.FindBallY(bmp);
     }
+
+    bool CheckVisible(Bitmap bmp) => FindBall(bmp).HasValue;
 
     void TapSpace()
     {
@@ -486,17 +492,13 @@ public sealed class HlorkaModule : IModule
                 var region = GetScanRegion(screen);
                 using var bmp = ScreenCapture.Capture(region);
 
-                bool visible = CheckVisible(bmp);
-                int? ballY   = HlorkaScanner.FindBallY(bmp);
-                int? lineY   = HlorkaScanner.FindLineY(bmp);
-
-                string madInfo = _template != null
-                    ? $"MAD={HlorkaScanner.GetMatchScore(bmp, _template):F1}  threshold={_cfg.MatchThreshold}"
-                    : "еталон не збережено";
+                int? ballY = FindBall(bmp);
+                int? lineY = HlorkaScanner.FindLineY(bmp);
+                bool visible = ballY.HasValue;
 
                 string msg = visible
-                    ? $"✅ Міні-гру знайдено!  Кулька Y={ballY}  Лінія Y={lineY}  ({madInfo})"
-                    : $"⏸ Міні-гра не знайдена  ({madInfo})";
+                    ? $"✅ Міні-гру знайдено!  Кулька Y={ballY}  Лінія Y={lineY}"
+                    : "⏸ Міні-гра не знайдена (кульку не знайдено)";
 
                 Application.Current.Dispatcher.Invoke(() =>
                 {

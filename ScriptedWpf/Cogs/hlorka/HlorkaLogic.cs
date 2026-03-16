@@ -57,6 +57,81 @@ static class HlorkaScanner
         return GetMatchScore(current, template) < threshold;
     }
 
+    // ── Ball.png template ─────────────────────────────────────────────────────
+
+    static string BallPath => Path.Combine(
+        AppDomain.CurrentDomain.BaseDirectory, "Cogs", "hlorka", "Ball.png");
+
+    /// <summary>
+    /// Завантажує Ball.png і масштабує до заданого розміру.
+    /// </summary>
+    public static Bitmap? LoadBallTemplate(int size = 24)
+    {
+        if (!File.Exists(BallPath)) return null;
+        try { using var src = new Bitmap(BallPath); return Resize(src, size, size); }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Шукає кульку (Ball.png) у кадрі через SAD по непрозорих пікселях.
+    /// Повертає Y-центр найкращого збігу, або null якщо SAD/піксель >= threshold.
+    /// threshold ≈ 40 (0 = ідеальний збіг, 255 = повна відмінність).
+    /// </summary>
+    public static unsafe int? FindBallByTemplate(Bitmap frame, Bitmap ball, int threshold = 40)
+    {
+        int fw = frame.Width, fh = frame.Height;
+        int bw = ball.Width,  bh = ball.Height;
+        if (bw > fw || bh > fh) return null;
+
+        var fData = frame.LockBits(new Rectangle(0,0,fw,fh), ImageLockMode.ReadOnly,  PixelFormat.Format32bppArgb);
+        var bData = ball.LockBits( new Rectangle(0,0,bw,bh), ImageLockMode.ReadOnly,  PixelFormat.Format32bppArgb);
+        byte* fp = (byte*)fData.Scan0, bp = (byte*)bData.Scan0;
+
+        // Рахуємо непрозорі пікселі кульки (круг на прозорому фоні)
+        int pixCount = 0;
+        for (int by = 0; by < bh; by++) {
+            byte* brow = bp + by * bData.Stride;
+            for (int bx = 0; bx < bw; bx++)
+                if (brow[bx*4+3] > 64) pixCount++;
+        }
+
+        int  bestY   = -1;
+        long bestSad = long.MaxValue;
+
+        if (pixCount > 0)
+        {
+            for (int fy = 0; fy <= fh - bh; fy += 2) // крок 2 для швидкості
+            {
+                for (int fx = 0; fx <= fw - bw; fx++)
+                {
+                    long sad = 0;
+                    for (int by = 0; by < bh; by++)
+                    {
+                        byte* frow = fp + (fy+by) * fData.Stride;
+                        byte* brow = bp + by     * bData.Stride;
+                        for (int bx = 0; bx < bw; bx++)
+                        {
+                            if (brow[bx*4+3] <= 64) continue;
+                            int fi = (fx+bx)*4;
+                            sad += Math.Abs(frow[fi]   - brow[bx*4]);
+                            sad += Math.Abs(frow[fi+1] - brow[bx*4+1]);
+                            sad += Math.Abs(frow[fi+2] - brow[bx*4+2]);
+                            if (sad >= bestSad) goto skipPos;
+                        }
+                    }
+                    bestSad = sad; bestY = fy;
+                    skipPos:;
+                }
+            }
+        }
+
+        frame.UnlockBits(fData);
+        ball.UnlockBits(bData);
+
+        if (bestY < 0) return null;
+        return bestSad / pixCount / 3 < threshold ? bestY + bh / 2 : null;
+    }
+
     // ── Детектори кульки та лінії ─────────────────────────────────────────────
 
     /// <summary>
