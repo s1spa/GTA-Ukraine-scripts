@@ -32,7 +32,12 @@ static class HlorkaScanner
     public static Bitmap? LoadTemplate()
     {
         if (!File.Exists(TemplatePath)) return null;
-        try { return new Bitmap(TemplatePath); } catch { return null; }
+        try
+        {
+            using var ms = new MemoryStream(File.ReadAllBytes(TemplatePath));
+            return new Bitmap(ms);
+        }
+        catch { return null; }
     }
 
     public static bool HasTemplate() => File.Exists(TemplatePath);
@@ -68,7 +73,12 @@ static class HlorkaScanner
     public static Bitmap? LoadBallTemplate(int size = 24)
     {
         if (!File.Exists(BallPath)) return null;
-        try { using var src = new Bitmap(BallPath); return Resize(src, size, size); }
+        try
+        {
+            using var ms  = new MemoryStream(File.ReadAllBytes(BallPath));
+            using var src = new Bitmap(ms);
+            return Resize(src, size, size);
+        }
         catch { return null; }
     }
 
