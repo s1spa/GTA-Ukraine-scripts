@@ -341,7 +341,8 @@ static class OrderScanner
                 for (int x = 0; x < bmp.Width; x++)
                 {
                     int b = row[x * 4], g = row[x * 4 + 1], r = row[x * 4 + 2];
-                    if (r > 200 && g > 220 && b >= 100 && b <= 180 && r > b && g > b)
+                    // rgba(222,237,131) — колір цінника, звужений діапазон щоб не попадати в іконки
+                    if (r >= 205 && r <= 240 && g >= 220 && g <= 250 && b >= 115 && b <= 148)
                     {
                         bool isNew = true;
                         foreach (var p in anchors) if (Math.Abs(p.X - x) < 200 && Math.Abs(p.Y - y) < 150) { isNew = false; break; }
