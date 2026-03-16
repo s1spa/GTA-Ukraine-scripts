@@ -35,6 +35,7 @@ public sealed class WiresModule : IModule
         if (_state != BotState.Idle) return;
         _state = BotState.Running;
         new Thread(Run) { IsBackground = true }.Start();
+        ShowStartNotification();
         StateChanged?.Invoke();
     }
 
@@ -43,7 +44,18 @@ public sealed class WiresModule : IModule
         if (_state == BotState.Idle) return;
         _state = BotState.Idle;
         _log("Wire Connector вимкнено.");
+        ShowStopNotification();
         StateChanged?.Invoke();
+    }
+
+    void ShowStartNotification()
+    {
+        if (_cfg.ShowNotifications) ToastNotifier.Show("Скрипт Wires", "Вмикаюсь...", ToastIcon.Success);
+    }
+
+    void ShowStopNotification()
+    {
+        if (_cfg.ShowNotifications) ToastNotifier.Show("Скрипт Wires", "Вимикаюсь...", ToastIcon.Info);
     }
 
     public void RegisterHotkeys(HotkeyService hotkeys)
@@ -156,6 +168,17 @@ public sealed class WiresModule : IModule
             FontSize = 10, VerticalAlignment = VerticalAlignment.Center
         });
         stack.Children.Add(speedRow);
+
+        var notifCb = new CheckBox
+        {
+            Content    = "Показувати сповіщення",
+            IsChecked  = _cfg.ShowNotifications,
+            Foreground = textSec,
+            Margin     = new Thickness(0, 10, 0, 0),
+        };
+        notifCb.Checked   += (_, _) => { _cfg.ShowNotifications = true;  _cfg.Save(); };
+        notifCb.Unchecked += (_, _) => { _cfg.ShowNotifications = false; _cfg.Save(); };
+        stack.Children.Add(notifCb);
 
         calibBtn.Click += (_, _) =>
         {

@@ -7,7 +7,8 @@ namespace ScriptedWpf.Cogs.Himlab;
 
 public class HimlabConfig
 {
-    [JsonPropertyName("monitorIndex")]  public int    MonitorIndex  { get; set; } = -1;
+    [JsonPropertyName("monitorIndex")]       public int    MonitorIndex      { get; set; } = -1;
+    [JsonPropertyName("showNotifications")] public bool   ShowNotifications { get; set; } = true;
     [JsonPropertyName("holdMs")]        public int    HoldMs        { get; set; } = 600;
     [JsonPropertyName("transitionMs")]  public int    TransitionMs  { get; set; } = 150;
     [JsonPropertyName("centerYPct")]    public double CenterYPct    { get; set; } = 0.876;

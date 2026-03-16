@@ -24,7 +24,8 @@ public class ColorSamples
 
 public class WiresConfig
 {
-    [JsonPropertyName("monitorIndex")] public int MonitorIndex { get; set; } = -1;
+    [JsonPropertyName("monitorIndex")]       public int  MonitorIndex      { get; set; } = -1;
+    [JsonPropertyName("showNotifications")] public bool ShowNotifications { get; set; } = true;
 
     // Горизонтальні лінії проводів (Y як відсоток висоти екрану)
     [JsonPropertyName("topWireY")] public double TopWireY { get; set; } = 0.277;

@@ -8,7 +8,8 @@ namespace ScriptedWpf.Cogs.Hlorka;
 public class HlorkaConfig
 {
     // Індекс монітора (-1 = основний)
-    [JsonPropertyName("monitorIndex")] public int MonitorIndex { get; set; } = -1;
+    [JsonPropertyName("monitorIndex")]       public int  MonitorIndex      { get; set; } = -1;
+    [JsonPropertyName("showNotifications")] public bool ShowNotifications { get; set; } = true;
 
     // Область сканування (частки від розміру екрану, 0.0–1.0)
     // Має охоплювати лише вертикальну планку (циліндр) міні-гри

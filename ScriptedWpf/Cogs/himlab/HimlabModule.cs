@@ -44,11 +44,13 @@ public sealed class HimlabModule : IModule
         if (_templates.Count < 4)
         {
             _log($"[Хімлаб] ❌ Не всі шаблони готові ({_templates.Count}/4). Налаштуй шаблони в налаштуваннях.");
+            ShowNotConfiguredNotification();
             return;
         }
 
         _running = true;
         new Thread(Run) { IsBackground = true }.Start();
+        ShowStartNotification();
         StateChanged?.Invoke();
     }
 
@@ -57,7 +59,23 @@ public sealed class HimlabModule : IModule
         if (!_running) return;
         _running = false;
         _log("[Хімлаб] Зупинено.");
+        ShowStopNotification();
         StateChanged?.Invoke();
+    }
+
+    void ShowStartNotification()
+    {
+        if (_cfg.ShowNotifications) ToastNotifier.Show("Скрипт Himlab", "Вмикаюсь...", ToastIcon.Success);
+    }
+
+    void ShowStopNotification()
+    {
+        if (_cfg.ShowNotifications) ToastNotifier.Show("Скрипт Himlab", "Вимикаюсь...", ToastIcon.Info);
+    }
+
+    void ShowNotConfiguredNotification()
+    {
+        if (_cfg.ShowNotifications) ToastNotifier.Show("Скрипт Himlab", "Скрипт не налаштований", ToastIcon.Warning);
     }
 
     public void RegisterHotkeys(HotkeyService hotkeys)
@@ -235,6 +253,16 @@ public sealed class HimlabModule : IModule
 
         // Transition delay
         AddRow("Пауза між буквами (мс)", IntBox(_cfg.TransitionMs, v => { _cfg.TransitionMs = v; _cfg.Save(); }));
+
+        var notifCb = new CheckBox
+        {
+            Content    = "Показувати сповіщення",
+            IsChecked  = _cfg.ShowNotifications,
+            Foreground = textSec,
+        };
+        notifCb.Checked   += (_, _) => { _cfg.ShowNotifications = true;  _cfg.Save(); };
+        notifCb.Unchecked += (_, _) => { _cfg.ShowNotifications = false; _cfg.Save(); };
+        AddRow("Сповіщення", notifCb);
 
         // ── Templates section ────────────────────────────────────────────────
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(20) }); row++;

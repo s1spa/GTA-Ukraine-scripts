@@ -36,6 +36,7 @@ public sealed class CdaModule : IModule
             _codeZone = new System.Drawing.Rectangle(_cfg.X, _cfg.Y, _cfg.Width, _cfg.Height);
         _state = BotState.AutoPilot;
         new Thread(RunAutoPilot) { IsBackground = true }.Start();
+        ShowStartNotification();
         StateChanged?.Invoke();
     }
 
@@ -44,7 +45,18 @@ public sealed class CdaModule : IModule
         if (_state == BotState.Idle) return;
         _state = BotState.Idle;
         _log("АВТОПІЛОТ ВИМКНЕНО.");
+        ShowStopNotification();
         StateChanged?.Invoke();
+    }
+
+    void ShowStartNotification()
+    {
+        if (_cfg.ShowNotifications) ToastNotifier.Show("Скрипт CDA", "Вмикаюсь...", ToastIcon.Success);
+    }
+
+    void ShowStopNotification()
+    {
+        if (_cfg.ShowNotifications) ToastNotifier.Show("Скрипт CDA", "Вимикаюсь...", ToastIcon.Info);
     }
 
     public void RegisterHotkeys(HotkeyService hotkeys)
@@ -161,6 +173,16 @@ public sealed class CdaModule : IModule
             }
         };
         AddRow("Макс. тонн", tonCb);
+
+        var notifCb = new CheckBox
+        {
+            Content   = "Показувати сповіщення",
+            IsChecked = _cfg.ShowNotifications,
+            Foreground = textSec,
+        };
+        notifCb.Checked   += (_, _) => { _cfg.ShowNotifications = true;  _cfg.Save(); };
+        notifCb.Unchecked += (_, _) => { _cfg.ShowNotifications = false; _cfg.Save(); };
+        AddRow("Сповіщення", notifCb);
 
         // Types section
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(16) }); row++;
@@ -311,6 +333,8 @@ public sealed class CdaModule : IModule
                             KeyInput.TypeCode(code, turbo: true);
                             _log("Готово! Замовлення взято. 🚚");
                             _state = BotState.Idle;
+                            ShowStopNotification();
+                            StateChanged?.Invoke();
                             return;
                         }
                     }
@@ -322,6 +346,8 @@ public sealed class CdaModule : IModule
         {
             _log($"[ПОМИЛКА] {ex.Message}");
             _state = BotState.Idle;
+            ShowStopNotification();
+            StateChanged?.Invoke();
         }
     }
 }

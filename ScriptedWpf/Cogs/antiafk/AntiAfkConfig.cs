@@ -7,7 +7,8 @@ namespace ScriptedWpf.Cogs.AntiAfk;
 
 public class AntiAfkConfig
 {
-    [JsonPropertyName("carMode")] public bool CarMode { get; set; } = false;
+    [JsonPropertyName("carMode")]            public bool CarMode            { get; set; } = false;
+    [JsonPropertyName("showNotifications")] public bool ShowNotifications { get; set; } = true;
 
     static readonly JsonSerializerOptions _opts = new() { WriteIndented = true };
 
