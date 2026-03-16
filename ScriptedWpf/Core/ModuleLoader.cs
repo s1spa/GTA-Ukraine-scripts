@@ -45,6 +45,7 @@ public static class ModuleLoader
         "antiafk" => new Cogs.AntiAfk.AntiAfkModule(),
         "himlab"  => new Cogs.Himlab.HimlabModule(),
         "hlorka"  => new Cogs.Hlorka.HlorkaModule(),
+        "trigger" => new Cogs.Trigger.TriggerModule(),
         _         => null,
     };
 }

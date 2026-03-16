@@ -3,6 +3,9 @@
     "allow": [
       "Bash(dotnet run -c Release)",
       "Bash(dotnet build \"e:/Programing/C#/GTA-Ukraine-scripts/ScriptedWpf/ScriptedWpf.csproj\" -c Release)"
+    ],
+    "additionalDirectories": [
+      "e:\\Programing\\C#\\GTA-Ukraine-scripts\\ScriptedWpf\\Cogs\\trigger"
     ]
   }
 }

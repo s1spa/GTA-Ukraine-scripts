@@ -12,6 +12,7 @@ using System.Windows.Media.Imaging;
 using ScriptedWpf.Core;
 using ScriptedWpf.Models;
 using ScriptedWpf.Cogs.Cda;
+using ScriptedWpf.Cogs.Trigger;
 
 namespace ScriptedWpf;
 
@@ -169,6 +170,19 @@ public partial class MainWindow : Window
                         ? (Brush)Application.Current.Resources["AccentBrush"]
                         : (Brush)Application.Current.Resources["TextDimBrush"]);
 
+                if (module is TriggerModule triggerMgr)
+                {
+                    // Load previously saved trigger action modules
+                    foreach (var actionMod in triggerMgr.LoadExisting())
+                        RegisterModule(actionMod);
+
+                    triggerMgr.ModuleCreated += actionMod =>
+                        Dispatcher.Invoke(() => RegisterModule(actionMod));
+
+                    triggerMgr.ModuleDeleted += actionMod =>
+                        Dispatcher.Invoke(() => UnregisterModule(actionMod));
+                }
+
                 if (module is CdaModule cda)
                 {
                     cda.OnFrame += bmp => Dispatcher.Invoke(() =>
@@ -203,6 +217,106 @@ public partial class MainWindow : Window
 
         // Add to sidebar sorted (favorites first)
         RefreshSidebarOrder();
+    }
+
+    // ── Dynamic module registration (for Auto Trigger children) ───────────────
+
+    void RegisterModule(IModule module)
+    {
+        var info = new ModuleInfo
+        {
+            Id          = module.Id,
+            Name        = module is TriggerActionModule tam ? tam.Name : module.Id,
+            Description = "",
+            Version     = "1.0.0",
+            Author      = "s1spa",
+        };
+
+        var accent  = (Brush)Application.Current.Resources["AccentBrush"];
+        var textDim = (Brush)Application.Current.Resources["TextDimBrush"];
+
+        bool isFav = _favorites.Contains(info.Id);
+
+        var btn = new Button
+        {
+            Style = (Style)Resources["SidebarButtonStyle"],
+            Tag   = info,
+        };
+
+        var statusDot = new System.Windows.Shapes.Ellipse
+        {
+            Width             = 6,
+            Height            = 6,
+            Margin            = new Thickness(0, 0, 8, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Fill              = textDim,
+        };
+
+        var starText = new TextBlock
+        {
+            Text              = isFav ? "★" : "☆",
+            Foreground        = isFav ? accent : textDim,
+            FontSize          = 16,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin            = new Thickness(0, 0, 6, 0),
+            Cursor            = Cursors.Hand,
+        };
+
+        var dock = new DockPanel { LastChildFill = true, HorizontalAlignment = HorizontalAlignment.Stretch };
+        DockPanel.SetDock(starText, Dock.Right);
+        dock.Children.Add(starText);
+
+        var left = new StackPanel { Orientation = Orientation.Horizontal };
+        left.Children.Add(statusDot);
+        left.Children.Add(new TextBlock
+        {
+            Text              = info.Name,
+            VerticalAlignment = VerticalAlignment.Center,
+            FontSize          = 13,
+        });
+        dock.Children.Add(left);
+        btn.Content = dock;
+
+        var entry = new ModuleEntry(info, module, btn, starText);
+
+        starText.MouseLeftButtonDown += (_, e) =>
+        {
+            e.Handled = true;
+            if (_favorites.Contains(info.Id)) { _favorites.Remove(info.Id); starText.Text = "☆"; starText.Foreground = textDim; }
+            else                              { _favorites.Add(info.Id);    starText.Text = "★"; starText.Foreground = accent;  }
+            SaveFavorites();
+            RefreshSidebarOrder();
+            if (_selected != null)
+                _selected.SidebarBtn.Background = new SolidColorBrush(Color.FromArgb(28, 76, 255, 114));
+        };
+        btn.Click += (_, _) => SelectModule(entry);
+
+        module.Initialize(msg => Dispatcher.Invoke(() => AppendLog(msg)));
+        module.StateChanged += () => Dispatcher.Invoke(() =>
+            statusDot.Fill = module.IsRunning
+                ? (Brush)Application.Current.Resources["AccentBrush"]
+                : (Brush)Application.Current.Resources["TextDimBrush"]);
+
+        if (_hotkeys != null)
+            module.RegisterHotkeys(_hotkeys);
+
+        _entries.Add(entry);
+        RefreshSidebarOrder();
+    }
+
+    void UnregisterModule(IModule module)
+    {
+        var entry = _entries.Find(e => e.Info.Id == module.Id);
+        if (entry == null) return;
+
+        if (_selected == entry)
+        {
+            _selected = null;
+            DetailContent.Content = null;
+        }
+
+        SidebarPanel.Children.Remove(entry.SidebarBtn);
+        _entries.Remove(entry);
     }
 
     void SelectModule(ModuleEntry entry)
