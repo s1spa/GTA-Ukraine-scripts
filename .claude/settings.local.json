@@ -8,7 +8,18 @@
       "Bash(powershell -Command \"Get-ChildItem ''D:\\\\Games\\\\steam1\\\\'' -Filter ''steamwebhelper.exe'' -Recurse -ErrorAction SilentlyContinue | Select-Object FullName\")",
       "Bash(dotnet run:*)",
       "Bash(find d:ProjectsgitGTA-Ukraine-scripts -name *.cs -type f)",
-      "Bash(grep -r \"Tesseract\\\\|Windows.Media.Ocr\\\\|SSD\\\\|template\" d:ProjectsgitGTA-Ukraine-scripts --include=*.cs)"
+      "Bash(grep -r \"Tesseract\\\\|Windows.Media.Ocr\\\\|SSD\\\\|template\" d:ProjectsgitGTA-Ukraine-scripts --include=*.cs)",
+      "Bash(find /d/Projects/git/GTA-Ukraine-scripts -type f -name *.json -o -name *.md -o -name *.txt -o -name *.csproj -o -name *.sln)",
+      "Bash(find /d/Projects/git/GTA-Ukraine-scripts -type f -name *da* -o -name *Cda*)",
+      "Bash(git -C /d/Projects/git/GTA-Ukraine-scripts status --short)",
+      "Bash(git -C /d/Projects/git/GTA-Ukraine-scripts show HEAD:ScriptedWpf/Cogs/cda/module.json)",
+      "Bash(git -C /d/Projects/git/GTA-Ukraine-scripts show HEAD:ScriptedWpf/Cogs/cda/CdaModule.cs)",
+      "Bash(xargs wc:*)",
+      "Read(//d/Projects/git/CDA/Нова папка/cda/**)",
+      "Read(//d/Projects/git/CDA/**)",
+      "Bash(find D:/Projects/git/CDA -name *.csproj)",
+      "Bash(mkdir -p \"D:/Projects/git/GTA-Ukraine-scripts/ScriptedWpf/Cogs/cda/ton_templates\")",
+      "Bash(cp \"D:/Projects/git/CDA/Нова папка/cda/ton_templates/\"*.png \"D:/Projects/git/GTA-Ukraine-scripts/ScriptedWpf/Cogs/cda/ton_templates/\")"
     ]
   }
 }
