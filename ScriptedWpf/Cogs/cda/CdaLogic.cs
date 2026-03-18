@@ -9,7 +9,6 @@ using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading;
-using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Tesseract;
@@ -346,7 +345,24 @@ static class OrderScanner
     }
 
     static readonly double[] ValidTons = { 0.5, 1.5, 3.0, 5.0 };
+
     static Dictionary<double, Bitmap>? _tonTemplates;
+
+    static Dictionary<double, Bitmap> LoadTonTemplates()
+    {
+        var d   = new Dictionary<double, Bitmap>();
+        string dir = Path.Combine(
+            Path.GetDirectoryName(Environment.ProcessPath!)
+                ?? AppDomain.CurrentDomain.BaseDirectory,
+            "Cogs", "cda", "ton_templates");
+        if (!Directory.Exists(dir)) return d;
+        foreach (double t in ValidTons)
+        {
+            string path = Path.Combine(dir, $"{t}.png");
+            if (File.Exists(path)) d[t] = new Bitmap(path);
+        }
+        return d;
+    }
 
     // ── Cached Tesseract engines (created once, reused every scan) ───────────
     static TesseractEngine? _badgeEng, _priceEng, _ukrEng;
@@ -371,60 +387,63 @@ static class OrderScanner
         }
     }
 
-    // ── Public API ────────────────────────────────────────────────────────────
-
     /// <summary>
-    /// Scans the given zone (or full monitor) for order cards.
-    /// Uses Windows OCR (parallel async) — much faster than Tesseract.
-    /// Template matching pre-filters by tonnage before any OCR runs.
+    /// Scans the given zone (or full monitor) for visible order cards.
+    /// <paramref name="maxTon"/> is used to skip heavy OCR for cards whose tonnage
+    /// doesn't match — template matching runs first as a fast pre-filter.
     /// </summary>
     public static List<OrderCard> FindCards(int monitorIndex,
                                             Rectangle? scanZone = null,
                                             double     maxTon   = 5.0)
     {
+        var cards  = new List<OrderCard>();
         var screen = scanZone ?? TessOcr.GetMonitorBounds(monitorIndex);
         using var bmp = ScreenCapture.Capture(screen);
 
         var anchors = FindGreenPriceAnchors(bmp);
-        if (anchors.Count == 0) return new();
+        if (anchors.Count == 0) return cards;
 
-        // Step 1 – tonnage pre-filter via template matching (no OCR, ~1ms/card)
-        var candidates = new List<(Point anchor, double ton)>();
-        foreach (var anchor in anchors)
-        {
-            var r = new Rectangle(anchor.X - 10, anchor.Y - 55, 320, 45);
-            if (r.X < 0 || r.Y < 0 || r.Right > bmp.Width || r.Bottom > bmp.Height) continue;
-            using var crop = bmp.Clone(r, bmp.PixelFormat);
-            double ton = MatchTonnageByTemplate(crop);
-            if (ton > 0 && ton > maxTon) continue; // skip before any OCR
-            candidates.Add((anchor, ton));
-        }
-        if (candidates.Count == 0) return new();
+        if (!File.Exists(Path.Combine(TessOcr.TessDataPath, "eng.traineddata"))) return cards;
 
-        // Step 2 – Tesseract OCR for remaining candidates (engines cached, created once)
-        if (!File.Exists(Path.Combine(TessOcr.TessDataPath, "eng.traineddata"))) return new();
         var (badgeEng, priceEng, ukrEng) = GetEngines();
 
-        var results = new List<OrderCard>();
-        foreach (var (anchor, ton) in candidates)
+        foreach (var anchor in anchors)
         {
+            // ── Fast pre-filter: tonnage via template matching (no Tesseract) ──
+            double tonnage = 0;
+            var badgeRect  = new Rectangle(anchor.X - 10, anchor.Y - 55, 320, 45);
+            if (badgeRect.X >= 0 && badgeRect.Y >= 0 &&
+                badgeRect.Right <= bmp.Width && badgeRect.Bottom <= bmp.Height)
+            {
+                using var badgeCrop = bmp.Clone(badgeRect, bmp.PixelFormat);
+                tonnage = MatchTonnageByTemplate(badgeCrop);
+            }
+
+            // Skip Tesseract entirely if tonnage already fails the filter
+            if (tonnage > 0 && tonnage > maxTon) continue;
+
+            // ── Slow path: full badge + price OCR ────────────────────────────
             int    price     = ReadPrice(bmp, anchor, priceEng);
             var    (ton2, level, orderType) = ReadBadge(bmp, anchor, badgeEng, ukrEng);
-            if (ton2 > 0 && Math.Abs(ton2 - ton) > 0.01) { } // template already gave us ton
-            results.Add(new OrderCard
+            // Use template tonnage if OCR didn't improve it
+            if (ton2 > 0) tonnage = ton2;
+
+            int btnX = screen.X + anchor.X + 130;
+            int btnY = screen.Y + anchor.Y + 50;
+            cards.Add(new OrderCard
             {
                 Anchor     = anchor,
                 PricePerKm = price,
-                Tonnage    = ton,
+                Tonnage    = tonnage,
                 Level      = level,
                 Type       = orderType,
-                ClickPoint = new Point(screen.X + anchor.X + 130, screen.Y + anchor.Y + 50),
+                ClickPoint = new Point(btnX, btnY),
             });
         }
-        return results;
+        return cards;
     }
 
-    // ── Price reading (Tesseract, English digits) ─────────────────────────────
+    // ── Price reading ─────────────────────────────────────────────────────────
 
     static int ReadPrice(Bitmap bmp, Point anchor, TesseractEngine eng)
     {
@@ -441,7 +460,7 @@ static class OrderScanner
         return m.Success && int.TryParse(m.Value, out int p) ? p : 0;
     }
 
-    // ── Badge reading: tonnage fallback + level + type (Tesseract Ukrainian) ──
+    // ── Badge reading (tonnage + level + type) ────────────────────────────────
 
     static (double ton, int lvl, string type) ReadBadge(
         Bitmap bmp, Point anchor, TesseractEngine badgeEng, TesseractEngine ukrEng)
@@ -452,45 +471,50 @@ static class OrderScanner
         using var filt = EnhanceBadgeText(crop);
         using var up   = Upscale(filt, 3);
 
-        // Level from English OCR
         string eng = DoOcr(badgeEng, up)
             .Replace("S","5").Replace("s","5").Replace("O","0").Replace("o","0").ToUpper();
+
+        // Tonnage: template matching (primary), OCR (fallback)
+        double ton = MatchTonnageByTemplate(crop);
+        if (ton == 0)
+        {
+            var tm = Regex.Match(eng, @"(\d+[.,]?\d*)\s*[tT]");
+            if (tm.Success)
+            {
+                string raw = tm.Groups[1].Value.Replace(',', '.');
+                double.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out ton);
+                if (!Array.Exists(ValidTons, t => Math.Abs(t - ton) < 0.01) && raw.Length >= 2)
+                {
+                    string candidate = raw[..^1] + "." + raw[^1..];
+                    if (double.TryParse(candidate, NumberStyles.Any,
+                            CultureInfo.InvariantCulture, out double c)
+                        && Array.Exists(ValidTons, t => Math.Abs(t - c) < 0.01))
+                        ton = c;
+                }
+            }
+        }
+
+        // Level
         int lvl = 1;
         var lm = Regex.Match(eng, @"(\d+)\s*[lL]");
         if (lm.Success) int.TryParse(lm.Groups[1].Value, out lvl);
 
-        // Type from Ukrainian OCR
+        // Type (Ukrainian OCR)
         string ukr = DoOcr(ukrEng, up).ToLower();
         string type =
-            ukr.Contains("одяг")    || ukr.Contains("модн")                                       ? "Одяг"          :
-            ukr.Contains("продукт") || ukr.Contains("харч")                                       ? "Продукти"      :
-            ukr.Contains("фарм")    || ukr.Contains("стерил") || ukr.Contains("аптек")            ? "Фармацевтика"  :
-            ukr.Contains("нафт")    || ukr.Contains("палив")                                       ? "Нафта"         :
-            ukr.Contains("авто")    || ukr.Contains("обслуг") || ukr.Contains("запчаст")          ? "Автозапчастини":
-            ukr.Contains("різн")    || ukr.Contains("світ")   || ukr.Contains("мобіл")            ? "Різне"         :
-            ukr.Contains("інш")     || ukr.Contains("спорядж")|| ukr.Contains("тактичн")          ? "Інше"          :
+            ukr.Contains("одяг")    || ukr.Contains("модн")                                     ? "Одяг"          :
+            ukr.Contains("продукт") || ukr.Contains("харч")                                     ? "Продукти"      :
+            ukr.Contains("фарм")    || ukr.Contains("стерил") || ukr.Contains("аптек")          ? "Фармацевтика"  :
+            ukr.Contains("нафт")    || ukr.Contains("палив")                                     ? "Нафта"         :
+            ukr.Contains("авто")    || ukr.Contains("обслуг") || ukr.Contains("запчаст")        ? "Автозапчастини":
+            ukr.Contains("різн")    || ukr.Contains("світ")   || ukr.Contains("мобіл")          ? "Різне"         :
+            ukr.Contains("інш")     || ukr.Contains("спорядж")|| ukr.Contains("тактичн")        ? "Інше"          :
             "Невідомо";
 
-        return (0, lvl, type); // tonnage already set by template matching
+        return (ton, lvl, type);
     }
 
     // ── Template matching for tonnage ─────────────────────────────────────────
-
-    static Dictionary<double, Bitmap> LoadTonTemplates()
-    {
-        var d   = new Dictionary<double, Bitmap>();
-        string dir = Path.Combine(
-            Path.GetDirectoryName(Environment.ProcessPath!)
-                ?? AppDomain.CurrentDomain.BaseDirectory,
-            "Cogs", "cda", "ton_templates");
-        if (!Directory.Exists(dir)) return d;
-        foreach (double t in ValidTons)
-        {
-            string path = Path.Combine(dir, $"{t}.png");
-            if (File.Exists(path)) d[t] = new Bitmap(path);
-        }
-        return d;
-    }
 
     static double MatchTonnageByTemplate(Bitmap crop)
     {
@@ -537,7 +561,7 @@ static class OrderScanner
         return minSSD;
     }
 
-    // ── Anchor detection ──────────────────────────────────────────────────────
+    // ── Anchor detection (green $/km badge color) ─────────────────────────────
 
     static List<Point> FindGreenPriceAnchors(Bitmap bmp)
     {
@@ -553,6 +577,7 @@ static class OrderScanner
                 for (int x = 0; x < bmp.Width; x++)
                 {
                     int b = row[x * 4], g = row[x * 4 + 1], r = row[x * 4 + 2];
+                    // rgba(222,237,131) — green-yellow price badge color
                     if (r >= 205 && r <= 240 && g >= 220 && g <= 250 && b >= 115 && b <= 148)
                     {
                         bool isNew = true;
@@ -568,8 +593,9 @@ static class OrderScanner
         return anchors;
     }
 
-    // ── Image preprocessing ───────────────────────────────────────────────────
+    // ── Image preprocessing helpers ───────────────────────────────────────────
 
+    /// <summary>Isolates neutral grey text (price $/km line).</summary>
     static unsafe Bitmap EnhanceGreyText(Bitmap src)
     {
         var dst   = new Bitmap(src.Width, src.Height, PixelFormat.Format32bppArgb);
@@ -590,6 +616,7 @@ static class OrderScanner
         return dst;
     }
 
+    /// <summary>Isolates colored badge text (blue tonnage, red/white type labels).</summary>
     static unsafe Bitmap EnhanceBadgeText(Bitmap src)
     {
         var dst   = new Bitmap(src.Width, src.Height, PixelFormat.Format32bppArgb);
@@ -601,9 +628,9 @@ static class OrderScanner
         for (int i = 0; i < src.Width * src.Height; i++)
         {
             int b = s[i * 4], g = s[i * 4 + 1], r = s[i * 4 + 2];
-            bool isText = (b > 160 && r < 140 && g < 180)
-                       || (r > 150 && g > 110 && b < 140)
-                       || (r > 180 && g > 180 && b > 180);
+            bool isText = (b > 160 && r < 140 && g < 180)     // blue badge border
+                       || (r > 150 && g > 110 && b < 140)     // red/amber text
+                       || (r > 180 && g > 180 && b > 180);    // white text
             byte bw = isText ? (byte)0 : (byte)255;
             d[i * 4] = bw; d[i * 4 + 1] = bw; d[i * 4 + 2] = bw; d[i * 4 + 3] = 255;
         }
