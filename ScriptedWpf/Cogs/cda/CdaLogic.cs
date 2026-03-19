@@ -5,13 +5,19 @@ using System.Drawing.Imaging;
 using SysImgFmt = System.Drawing.Imaging.ImageFormat;
 using System.Globalization;
 using System.IO;
-using System.Net.Http;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using Tesseract;
+using OpenCvSharp;
+using Point     = System.Drawing.Point;
+using Rectangle = System.Drawing.Rectangle;
+using Sdcb.PaddleOCR;
+using Sdcb.PaddleOCR.Models;
+using Sdcb.PaddleOCR.Models.Online;
+using Sdcb.PaddleInference;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
 using Windows.Storage.Streams;
@@ -176,158 +182,119 @@ static class Levenshtein
     }
 }
 
-// ── Tesseract utilities ───────────────────────────────────────────────────────
-static class TessOcr
+// ── PaddleOCR helper (замінює Tesseract) ─────────────────────────────────────
+static class PaddleHelper
 {
-    public static string TessDataPath => Path.Combine(
-        Path.GetDirectoryName(Environment.ProcessPath!) ?? AppDomain.CurrentDomain.BaseDirectory,
-        "tessdata");
+    // Два движки: English (для тоннажу/рівня/ціни) та Cyrillic (для типу вантажу і діалогу)
+    static PaddleOcrAll? _eng, _cyr;
+    static readonly object _engLock = new();
+    static readonly object _cyrLock = new();
 
-    static readonly string[] RequiredLangs = { "ukr", "eng" };
-    const string TessdataBaseUrl = "https://github.com/tesseract-ocr/tessdata_fast/raw/main/";
-
-    public static void EnsureTessdata(Action<string> log)
+    // Завантажує модель з інтернету (~50 MB за раз, кешується локально)
+    static FullOcrModel DownloadModel(bool cyr)
     {
-        Directory.CreateDirectory(TessDataPath);
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
-        foreach (var lang in RequiredLangs)
-        {
-            var path = Path.Combine(TessDataPath, $"{lang}.traineddata");
-            if (File.Exists(path)) continue;
-            log($"[CDA] Завантаження {lang}.traineddata...");
-            try
-            {
-                var bytes = http.GetByteArrayAsync(TessdataBaseUrl + $"{lang}.traineddata")
-                                .GetAwaiter().GetResult();
-                File.WriteAllBytes(path, bytes);
-                log($"[CDA] {lang}.traineddata завантажено.");
-            }
-            catch (Exception ex)
-            {
-                log($"[CDA] ❌ Не вдалося завантажити {lang}.traineddata: {ex.Message}");
-            }
-        }
+        // OnlineFullModels.EnglishV3 = det(EnglishV3) + cls(ChineseMobileV2) + rec(EnglishV3)
+        // Для кирилиці замінюємо лише recognizer на CyrillicV3
+        var onlineModels = cyr
+            ? new OnlineFullModels(
+                OnlineDetectionModel.EnglishV3,
+                OnlineClassificationModel.ChineseMobileV2,
+                LocalDictOnlineRecognizationModel.CyrillicV3)
+            : OnlineFullModels.EnglishV3;
+        return onlineModels.DownloadAsync().GetAwaiter().GetResult();
     }
 
-    public static Rectangle GetMonitorBounds(int monitorIndex)
+    static PaddleOcrAll MakeEngine(FullOcrModel model) => new(model)
     {
-        var screens = Screen.AllScreens;
-        if (monitorIndex >= 0 && monitorIndex < screens.Length)
-            return screens[monitorIndex].Bounds;
-        return Screen.PrimaryScreen!.Bounds;
-    }
+        AllowRotateDetection    = false,
+        Enable180Classification = false,
+    };
 
-    // Inverts dark-on-bright: keeps only near-black pixels (dialog text on dark bg)
-    static unsafe Bitmap InvertContrast(Bitmap src)
+    /// <summary>
+    /// Ініціалізує двигуни PaddleOCR. Моделі (~50 MB) завантажуються автоматично
+    /// до %USERPROFILE%\.paddlesharp\models при першому запуску.
+    /// </summary>
+    public static void EnsureInit(Action<string> log)
     {
-        var dst   = new Bitmap(src.Width, src.Height, PixelFormat.Format32bppArgb);
-        var sData = src.LockBits(new Rectangle(0, 0, src.Width, src.Height),
-                        ImageLockMode.ReadOnly,  PixelFormat.Format32bppArgb);
-        var dData = dst.LockBits(new Rectangle(0, 0, dst.Width, dst.Height),
-                        ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
-        byte* s = (byte*)sData.Scan0, d = (byte*)dData.Scan0;
-        for (int i = 0; i < src.Width * src.Height; i++)
-        {
-            int max = Math.Max(s[i * 4], Math.Max(s[i * 4 + 1], s[i * 4 + 2]));
-            byte bw = max < 20 ? (byte)255 : (byte)0;
-            d[i * 4] = bw; d[i * 4 + 1] = bw; d[i * 4 + 2] = bw; d[i * 4 + 3] = 255;
-        }
-        src.UnlockBits(sData); dst.UnlockBits(dData);
-        return dst;
-    }
-
-    static List<(string norm, Tesseract.Rect bounds)> ScanLines(
-        TesseractEngine engine, Bitmap bmp, bool invert)
-    {
-        Bitmap processed = invert ? InvertContrast(bmp) : bmp;
+        if (_eng != null && _cyr != null) return;
+        log("[CDA] Завантаження PaddleOCR моделей (~50 MB, кешується)...");
         try
         {
-            using var ms   = new MemoryStream();
-            processed.Save(ms, SysImgFmt.Png);
-            ms.Position = 0;
-            using var pix  = Pix.LoadFromMemory(ms.ToArray());
-            using var page = engine.Process(pix, PageSegMode.Auto);
-            using var iter = page.GetIterator();
-            var lines = new List<(string, Tesseract.Rect)>();
-            iter.Begin();
-            do
-            {
-                if (!iter.TryGetBoundingBox(PageIteratorLevel.TextLine, out var bounds)) continue;
-                var norm = Regex.Replace(
-                    (iter.GetText(PageIteratorLevel.TextLine) ?? "").ToLowerInvariant(),
-                    @"[^\w\s]", " ").Trim();
-                if (norm.Length >= 5) lines.Add((Regex.Replace(norm, @"\s+", " "), bounds));
-            }
-            while (iter.Next(PageIteratorLevel.TextLine));
-            return lines;
+            var engModel = DownloadModel(cyr: false);
+            var cyrModel = DownloadModel(cyr: true);
+            lock (_engLock) _eng ??= MakeEngine(engModel);
+            lock (_cyrLock) _cyr ??= MakeEngine(cyrModel);
+            log("[CDA] PaddleOCR готовий.");
         }
-        finally { if (invert) processed.Dispose(); }
+        catch (Exception ex) { log($"[CDA] ❌ PaddleOCR: {ex.Message}"); }
+    }
+
+    /// <summary>Конвертує System.Drawing.Bitmap у OpenCV Mat (BGR).</summary>
+    public static Mat BitmapToMat(Bitmap bmp)
+    {
+        var bd = bmp.LockBits(new System.Drawing.Rectangle(0, 0, bmp.Width, bmp.Height),
+                     ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            // Format32bppArgb у пам'яті = BGRA на little-endian
+            using var bgra = new Mat(bmp.Height, bmp.Width, MatType.CV_8UC4, bd.Scan0, bd.Stride);
+            return bgra.CvtColor(ColorConversionCodes.BGRA2BGR);
+        }
+        finally { bmp.UnlockBits(bd); }
+    }
+
+    /// <summary>Детекція + розпізнавання тексту на Bitmap.</summary>
+    public static PaddleOcrResultRegion[] Detect(Bitmap bmp, bool cyr = false)
+    {
+        if (cyr ? _cyr == null : _eng == null) return Array.Empty<PaddleOcrResultRegion>();
+        using var mat = BitmapToMat(bmp);
+        if (cyr) { lock (_cyrLock) return _cyr!.Run(mat).Regions; }
+        else     { lock (_engLock) return _eng!.Run(mat).Regions; }
+    }
+
+    public static System.Drawing.Rectangle GetMonitorBounds(int monitorIndex)
+    {
+        var screens = Screen.AllScreens;
+        return monitorIndex >= 0 && monitorIndex < screens.Length
+            ? screens[monitorIndex].Bounds
+            : Screen.PrimaryScreen!.Bounds;
     }
 
     /// <summary>
-    /// Scans the full monitor to find the "Введіть код підтвердження" dialog.
-    /// Returns the rectangle of the code input field, or null if not found.
+    /// Сканує монітор на наявність діалогу "Введіть код підтвердження".
+    /// Повертає координати поля вводу або null.
     /// </summary>
-    static TesseractEngine? _dialogEng;
-
-    public static Rectangle? FindDialogRegion(int monitorIndex = -1)
+    public static System.Drawing.Rectangle? FindDialogRegion(int monitorIndex = -1)
     {
-        if (!File.Exists(Path.Combine(TessDataPath, "ukr.traineddata"))) return null;
-
+        if (_cyr == null) return null;
         var screen = GetMonitorBounds(monitorIndex);
         using var bmp = ScreenCapture.Capture(screen);
-        _dialogEng ??= new TesseractEngine(TessDataPath, "ukr", EngineMode.Default);
-        var engine = _dialogEng;
-
-        var linesNormal   = ScanLines(engine, bmp, invert: false);
-        var linesInverted = ScanLines(engine, bmp, invert: true);
+        var regions = Detect(bmp, cyr: true);
 
         const string target = "введіть код підтвердження щоб взяти замовлення";
+        PaddleOcrResultRegion best = default;
+        int bestDist = int.MaxValue;
 
-        (int dist, Tesseract.Rect bounds) FindBest(List<(string norm, Tesseract.Rect bounds)> lines)
+        foreach (var region in regions)
         {
-            int bestDist = int.MaxValue;
-            Tesseract.Rect bestBounds = default;
-            lines.Sort((a, b) => a.bounds.Y1.CompareTo(b.bounds.Y1));
-            for (int i = 0; i < lines.Count; i++)
-                for (int len = 1; len <= 2 && i + len - 1 < lines.Count; len++)
-                {
-                    var parts = new string[len];
-                    for (int k = 0; k < len; k++) parts[k] = lines[i + k].norm;
-                    string comb = string.Join(" ", parts);
-                    if (comb.Length < 10 ||
-                        (!comb.Contains("код") && !comb.Contains("підтверд") && !comb.Contains("введіть")))
-                        continue;
-                    int dist = Levenshtein.Distance(
-                        Regex.Replace(comb, @"\d+", "").Trim(), target);
-                    if (dist < bestDist)
-                    {
-                        bestDist   = dist;
-                        bestBounds = new Tesseract.Rect(
-                            Math.Min(lines[i].bounds.X1, lines[i + len - 1].bounds.X1),
-                            lines[i].bounds.Y1,
-                            Math.Max(lines[i].bounds.X2, lines[i + len - 1].bounds.X2)
-                                - Math.Min(lines[i].bounds.X1, lines[i + len - 1].bounds.X1),
-                            lines[i + len - 1].bounds.Y2 - lines[i].bounds.Y1);
-                    }
-                }
-            return (bestDist, bestBounds);
+            var text = region.Text.ToLower();
+            if (!text.Contains("код") && !text.Contains("підтверд") && !text.Contains("введіть"))
+                continue;
+            string norm = Regex.Replace(text, @"[^\w\s]", " ").Trim();
+            int d = Levenshtein.Distance(norm, target);
+            if (d < bestDist) { bestDist = d; best = region; }
         }
 
-        var m1   = FindBest(linesNormal);
-        var m2   = FindBest(linesInverted);
-        var best = m1.dist < m2.dist ? m1 : m2;
-        if (best.dist > 22) return null;
+        if (bestDist > 30 || bestDist == int.MaxValue) return null;
 
-        int w = 600, x = (bmp.Width - w) / 2;
-        int y = best.bounds.Y1 + best.bounds.Height;
-        int h = 60;
+        var b  = best.Rect.BoundingRect();
         float sx = (float)bmp.Width / screen.Width, sy = (float)bmp.Height / screen.Height;
-        return new Rectangle(
-            screen.X + (int)(x / sx),
-            screen.Y + (int)(y / sy),
-            (int)(w / sx),
-            (int)(h / sy));
+        int w = 600, x = (bmp.Width - w) / 2;
+        return new System.Drawing.Rectangle(
+            screen.X + (int)(x  / sx),
+            screen.Y + (int)((b.Y + b.Height) / sy),
+            (int)(w  / sx),
+            (int)(60 / sy));
     }
 }
 
@@ -346,113 +313,44 @@ static class OrderScanner
 
     static readonly double[] ValidTons = { 0.5, 1.5, 3.0, 5.0 };
 
-    static Dictionary<double, Bitmap>? _tonTemplates;
-
-    static Dictionary<double, Bitmap> LoadTonTemplates()
-    {
-        var d   = new Dictionary<double, Bitmap>();
-        string dir = Path.Combine(
-            Path.GetDirectoryName(Environment.ProcessPath!)
-                ?? AppDomain.CurrentDomain.BaseDirectory,
-            "Cogs", "cda", "ton_templates");
-        if (!Directory.Exists(dir)) return d;
-        foreach (double t in ValidTons)
-        {
-            string path = Path.Combine(dir, $"{t}.png");
-            if (File.Exists(path)) d[t] = new Bitmap(path);
-        }
-        return d;
-    }
-
-    // ── Cached Tesseract engines (created once, reused every scan) ───────────
-    static TesseractEngine? _badgeEng, _priceEng, _ukrEng;
-    static readonly object  _engLock = new();
-
-    static (TesseractEngine badge, TesseractEngine price, TesseractEngine ukr) GetEngines()
-    {
-        lock (_engLock)
-        {
-            if (_badgeEng == null)
-            {
-                _badgeEng = new TesseractEngine(TessOcr.TessDataPath, "eng", EngineMode.Default);
-                _badgeEng.SetVariable("tessedit_char_whitelist", "0123456789.tTlLvVsS");
-            }
-            if (_priceEng == null)
-            {
-                _priceEng = new TesseractEngine(TessOcr.TessDataPath, "eng", EngineMode.Default);
-                _priceEng.SetVariable("tessedit_char_whitelist", "0123456789$/km.≈ ");
-            }
-            _ukrEng ??= new TesseractEngine(TessOcr.TessDataPath, "ukr", EngineMode.Default);
-            return (_badgeEng, _priceEng, _ukrEng);
-        }
-    }
-
-    /// <summary>
-    /// Scans the given zone (or full monitor) for visible order cards.
-    /// <paramref name="maxTon"/> is used to skip heavy OCR for cards whose tonnage
-    /// doesn't match — template matching runs first as a fast pre-filter.
-    /// </summary>
     public static List<OrderCard> FindCards(int monitorIndex,
                                             Rectangle? scanZone = null,
                                             double     maxTon   = 5.0)
     {
         var cards  = new List<OrderCard>();
-        var screen = scanZone ?? TessOcr.GetMonitorBounds(monitorIndex);
+        var screen = scanZone ?? PaddleHelper.GetMonitorBounds(monitorIndex);
         using var bmp = ScreenCapture.Capture(screen);
 
         var anchors = FindGreenPriceAnchors(bmp);
         if (anchors.Count == 0) return cards;
 
-        if (!File.Exists(Path.Combine(TessOcr.TessDataPath, "eng.traineddata"))) return cards;
-
-        var (badgeEng, priceEng, ukrEng) = GetEngines();
-
         foreach (var anchor in anchors)
         {
-            // ── Fast pre-filter: tonnage via template matching (no Tesseract) ──
-            double tonnage = 0;
-            var badgeRect  = new Rectangle(anchor.X - 10, anchor.Y - 55, 320, 45);
-            if (badgeRect.X >= 0 && badgeRect.Y >= 0 &&
-                badgeRect.Right <= bmp.Width && badgeRect.Bottom <= bmp.Height)
-            {
-                using var badgeCrop = bmp.Clone(badgeRect, bmp.PixelFormat);
-                tonnage = MatchTonnageByTemplate(badgeCrop);
-            }
-
-            // Skip Tesseract entirely if tonnage already fails the filter
-            if (tonnage > 0 && tonnage > maxTon) continue;
-
-            // ── Slow path: full badge + price OCR ────────────────────────────
-            int    price     = ReadPrice(bmp, anchor, priceEng);
-            var    (ton2, level, orderType) = ReadBadge(bmp, anchor, badgeEng, ukrEng);
-            // Use template tonnage if OCR didn't improve it
-            if (ton2 > 0) tonnage = ton2;
-
-            int btnX = screen.X + anchor.X + 130;
-            int btnY = screen.Y + anchor.Y + 50;
+            var (ton, lvl, type) = ReadBadge(bmp, anchor);
+            if (ton > 0 && ton > maxTon) continue;
+            int price = ReadPrice(bmp, anchor);
             cards.Add(new OrderCard
             {
                 Anchor     = anchor,
                 PricePerKm = price,
-                Tonnage    = tonnage,
-                Level      = level,
-                Type       = orderType,
-                ClickPoint = new Point(btnX, btnY),
+                Tonnage    = ton,
+                Level      = lvl,
+                Type       = type,
+                ClickPoint = new Point(screen.X + anchor.X + 130, screen.Y + anchor.Y + 50),
             });
         }
         return cards;
     }
 
-    // ── Price reading ─────────────────────────────────────────────────────────
+    // ── Price reading (English PaddleOCR) ─────────────────────────────────────
 
-    static int ReadPrice(Bitmap bmp, Point anchor, TesseractEngine eng)
+    static int ReadPrice(Bitmap bmp, Point anchor)
     {
         var r = new Rectangle(anchor.X - 10, anchor.Y + 25, 240, 40);
         if (r.Right > bmp.Width || r.Bottom > bmp.Height || r.X < 0) return 0;
         using var crop = bmp.Clone(r, bmp.PixelFormat);
-        using var filt = EnhanceGreyText(crop);
-        using var up   = Upscale(filt, 3);
-        string txt = DoOcr(eng, up)
+        using var up   = Upscale(crop, 3);
+        string txt = string.Join("", PaddleHelper.Detect(up).Select(rg => rg.Text))
             .Replace(" ", "").Replace("O", "0").Replace("S", "5").Replace("s", "5");
         int di = txt.IndexOf('$');
         if (di >= 0 && di < txt.Length - 1) txt = txt[(di + 1)..];
@@ -460,47 +358,43 @@ static class OrderScanner
         return m.Success && int.TryParse(m.Value, out int p) ? p : 0;
     }
 
-    // ── Badge reading (tonnage + level + type) ────────────────────────────────
+    // ── Badge reading (English для тоннажу/рівня, Cyrillic для типу) ──────────
 
-    static (double ton, int lvl, string type) ReadBadge(
-        Bitmap bmp, Point anchor, TesseractEngine badgeEng, TesseractEngine ukrEng)
+    static (double ton, int lvl, string type) ReadBadge(Bitmap bmp, Point anchor)
     {
         var r = new Rectangle(anchor.X - 10, anchor.Y - 55, 320, 45);
         if (r.Right > bmp.Width || r.Y < 0 || r.X < 0) return (0, 1, "Невідомо");
         using var crop = bmp.Clone(r, bmp.PixelFormat);
-        using var filt = EnhanceBadgeText(crop);
-        using var up   = Upscale(filt, 3);
+        using var up   = Upscale(crop, 3);   // PaddleOCR працює на кольорових зображеннях
 
-        string eng = DoOcr(badgeEng, up)
+        // English: тоннаж + рівень
+        string eng = string.Join(" ", PaddleHelper.Detect(up).Select(rg => rg.Text))
             .Replace("S","5").Replace("s","5").Replace("O","0").Replace("o","0").ToUpper();
 
-        // Tonnage: template matching (primary), OCR (fallback)
-        double ton = MatchTonnageByTemplate(crop);
-        if (ton == 0)
+        double ton = 0;
+        var tm = Regex.Match(eng, @"(\d+[.,]?\d*)\s*[tT]");
+        if (tm.Success)
         {
-            var tm = Regex.Match(eng, @"(\d+[.,]?\d*)\s*[tT]");
-            if (tm.Success)
+            string raw = tm.Groups[1].Value.Replace(',', '.');
+            double.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out ton);
+            // Виправлення помилки парсингу: "15" → "1.5"
+            if (!Array.Exists(ValidTons, t => Math.Abs(t - ton) < 0.01) && raw.Length >= 2)
             {
-                string raw = tm.Groups[1].Value.Replace(',', '.');
-                double.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out ton);
-                if (!Array.Exists(ValidTons, t => Math.Abs(t - ton) < 0.01) && raw.Length >= 2)
-                {
-                    string candidate = raw[..^1] + "." + raw[^1..];
-                    if (double.TryParse(candidate, NumberStyles.Any,
-                            CultureInfo.InvariantCulture, out double c)
-                        && Array.Exists(ValidTons, t => Math.Abs(t - c) < 0.01))
-                        ton = c;
-                }
+                string candidate = raw[..^1] + "." + raw[^1..];
+                if (double.TryParse(candidate, NumberStyles.Any,
+                        CultureInfo.InvariantCulture, out double c)
+                    && Array.Exists(ValidTons, t => Math.Abs(t - c) < 0.01))
+                    ton = c;
             }
         }
 
-        // Level
         int lvl = 1;
         var lm = Regex.Match(eng, @"(\d+)\s*[lL]");
         if (lm.Success) int.TryParse(lm.Groups[1].Value, out lvl);
 
-        // Type (Ukrainian OCR)
-        string ukr = DoOcr(ukrEng, up).ToLower();
+        // Cyrillic: тип вантажу
+        string ukr = string.Join(" ", PaddleHelper.Detect(up, cyr: true).Select(rg => rg.Text))
+            .ToLower();
         string type =
             ukr.Contains("одяг")    || ukr.Contains("модн")                                     ? "Одяг"          :
             ukr.Contains("продукт") || ukr.Contains("харч")                                     ? "Продукти"      :
@@ -512,53 +406,6 @@ static class OrderScanner
             "Невідомо";
 
         return (ton, lvl, type);
-    }
-
-    // ── Template matching for tonnage ─────────────────────────────────────────
-
-    static double MatchTonnageByTemplate(Bitmap crop)
-    {
-        _tonTemplates ??= LoadTonTemplates();
-        if (_tonTemplates.Count == 0) return 0;
-        double bestTon = 0, minSSD = double.MaxValue;
-        foreach (var (t, tmpl) in _tonTemplates)
-        {
-            double ssd = TemplateSSD(crop, tmpl);
-            if (ssd < minSSD) { minSSD = ssd; bestTon = t; }
-        }
-        return bestTon;
-    }
-
-    static unsafe double TemplateSSD(Bitmap source, Bitmap tmpl)
-    {
-        if (tmpl.Width > source.Width || tmpl.Height > source.Height) return double.MaxValue;
-        var srcData = source.LockBits(new Rectangle(0, 0, source.Width, source.Height),
-                          ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        var tplData = tmpl.LockBits(new Rectangle(0, 0, tmpl.Width, tmpl.Height),
-                          ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        double minSSD = double.MaxValue;
-        try
-        {
-            byte* s = (byte*)srcData.Scan0, t = (byte*)tplData.Scan0;
-            for (int y = 0; y <= source.Height - tmpl.Height; y++)
-            for (int x = 0; x <= source.Width  - tmpl.Width;  x++)
-            {
-                double ssd = 0;
-                for (int ty = 0; ty < tmpl.Height; ty++)
-                {
-                    byte* sRow = s + (y + ty) * srcData.Stride + x * 4;
-                    byte* tRow = t + ty * tplData.Stride;
-                    for (int tx = 0; tx < tmpl.Width; tx++, sRow += 4, tRow += 4)
-                    {
-                        int dr = sRow[2] - tRow[2], dg = sRow[1] - tRow[1], db = sRow[0] - tRow[0];
-                        ssd += dr*dr + dg*dg + db*db;
-                    }
-                }
-                if (ssd < minSSD) minSSD = ssd;
-            }
-        }
-        finally { source.UnlockBits(srcData); tmpl.UnlockBits(tplData); }
-        return minSSD;
     }
 
     // ── Anchor detection (green $/km badge color) ─────────────────────────────
@@ -593,50 +440,7 @@ static class OrderScanner
         return anchors;
     }
 
-    // ── Image preprocessing helpers ───────────────────────────────────────────
-
-    /// <summary>Isolates neutral grey text (price $/km line).</summary>
-    static unsafe Bitmap EnhanceGreyText(Bitmap src)
-    {
-        var dst   = new Bitmap(src.Width, src.Height, PixelFormat.Format32bppArgb);
-        var sData = src.LockBits(new Rectangle(0, 0, src.Width, src.Height),
-                        ImageLockMode.ReadOnly,  PixelFormat.Format32bppArgb);
-        var dData = dst.LockBits(new Rectangle(0, 0, dst.Width, dst.Height),
-                        ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
-        byte* s = (byte*)sData.Scan0, d = (byte*)dData.Scan0;
-        for (int i = 0; i < src.Width * src.Height; i++)
-        {
-            int b = s[i * 4], g = s[i * 4 + 1], r = s[i * 4 + 2];
-            bool isText = r > 150 && g > 150 && b > 150
-                       && Math.Abs(r - g) < 25 && Math.Abs(g - b) < 25;
-            byte bw = isText ? (byte)0 : (byte)255;
-            d[i * 4] = bw; d[i * 4 + 1] = bw; d[i * 4 + 2] = bw; d[i * 4 + 3] = 255;
-        }
-        src.UnlockBits(sData); dst.UnlockBits(dData);
-        return dst;
-    }
-
-    /// <summary>Isolates colored badge text (blue tonnage, red/white type labels).</summary>
-    static unsafe Bitmap EnhanceBadgeText(Bitmap src)
-    {
-        var dst   = new Bitmap(src.Width, src.Height, PixelFormat.Format32bppArgb);
-        var sData = src.LockBits(new Rectangle(0, 0, src.Width, src.Height),
-                        ImageLockMode.ReadOnly,  PixelFormat.Format32bppArgb);
-        var dData = dst.LockBits(new Rectangle(0, 0, dst.Width, dst.Height),
-                        ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
-        byte* s = (byte*)sData.Scan0, d = (byte*)dData.Scan0;
-        for (int i = 0; i < src.Width * src.Height; i++)
-        {
-            int b = s[i * 4], g = s[i * 4 + 1], r = s[i * 4 + 2];
-            bool isText = (b > 160 && r < 140 && g < 180)     // blue badge border
-                       || (r > 150 && g > 110 && b < 140)     // red/amber text
-                       || (r > 180 && g > 180 && b > 180);    // white text
-            byte bw = isText ? (byte)0 : (byte)255;
-            d[i * 4] = bw; d[i * 4 + 1] = bw; d[i * 4 + 2] = bw; d[i * 4 + 3] = 255;
-        }
-        src.UnlockBits(sData); dst.UnlockBits(dData);
-        return dst;
-    }
+    // ── Image helpers ─────────────────────────────────────────────────────────
 
     static Bitmap Upscale(Bitmap src, int scale)
     {
@@ -645,16 +449,6 @@ static class OrderScanner
         g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
         g.DrawImage(src, 0, 0, dst.Width, dst.Height);
         return dst;
-    }
-
-    static string DoOcr(TesseractEngine engine, Bitmap bmp)
-    {
-        using var ms   = new MemoryStream();
-        bmp.Save(ms, SysImgFmt.Png);
-        ms.Position = 0;
-        using var pix  = Pix.LoadFromMemory(ms.ToArray());
-        using var page = engine.Process(pix, PageSegMode.SingleLine);
-        return page.GetText() ?? "";
     }
 }
 

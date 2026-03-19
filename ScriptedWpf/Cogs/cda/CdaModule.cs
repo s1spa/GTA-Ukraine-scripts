@@ -32,7 +32,7 @@ public sealed class CdaModule : IModule
         // Download tessdata in background on first run
         new Thread(() =>
         {
-            try { TessOcr.EnsureTessdata(_log); }
+            try { PaddleHelper.EnsureInit(_log); }
             catch { }
         })
         { IsBackground = true }.Start();
@@ -98,14 +98,16 @@ public sealed class CdaModule : IModule
 
                 var code = CdaLogic.FindCodeAsync(img).GetAwaiter().GetResult();
 
+                if (!_running) break;
+
                 if (code != null)
                 {
                     noCodeStreak = 0;
                     if (code != lastCode)
                     {
                         _log($"CDA: >> Код: {code} — вводжу...");
-                        Thread.Sleep(100);
-                        CdaLogic.TypeCode(code, _cfg.Turbo);
+                        if (_running) Thread.Sleep(100);
+                        if (_running) CdaLogic.TypeCode(code, _cfg.Turbo);
                         _log("CDA: >> Готово.");
                         lastCode      = code;
                         cooldownUntil = now + 2000;
@@ -119,12 +121,18 @@ public sealed class CdaModule : IModule
             catch (Exception ex)
             {
                 _log($"CDA: ❌ {ex.Message}");
-                Thread.Sleep(500);
+                CancellableSleep(500);
             }
         }
     }
 
     // ── Auto pilot loop ───────────────────────────────────────────────────────
+
+    void CancellableSleep(int ms)
+    {
+        var end = Environment.TickCount64 + ms;
+        while (_running && Environment.TickCount64 < end) Thread.Sleep(50);
+    }
 
     void RunAutoPilot()
     {
@@ -149,9 +157,11 @@ public sealed class CdaModule : IModule
                         : null;
                     var cards = OrderScanner.FindCards(_cfg.MonitorIndex, scanZone, _cfg.MaxTon);
 
+                    if (!_running) break;
+
                     if (cards.Count == 0)
                     {
-                        Thread.Sleep(2000);
+                        CancellableSleep(2000);
                         continue;
                     }
 
@@ -174,9 +184,11 @@ public sealed class CdaModule : IModule
                     if (valid.Count == 0)
                     {
                         _log("CDA: Підходящих замовлень немає. Чекаю...");
-                        Thread.Sleep(2000);
+                        CancellableSleep(2000);
                         continue;
                     }
+
+                    if (!_running) break;
 
                     // Pick best (highest $/km)
                     var best = valid.OrderByDescending(c => c.PricePerKm).First();
@@ -184,10 +196,11 @@ public sealed class CdaModule : IModule
 
                     // Click on order card
                     MouseInput.Click(best.ClickPoint.X, best.ClickPoint.Y);
-                    Thread.Sleep(500);
+                    CancellableSleep(500);
+                    if (!_running) break;
 
                     // Click "Взяти замовлення" button (center-right of screen)
-                    var scr  = TessOcr.GetMonitorBounds(_cfg.MonitorIndex);
+                    var scr  = PaddleHelper.GetMonitorBounds(_cfg.MonitorIndex);
                     int btnX = scr.X + scr.Width  / 2 + (int)(scr.Width  * 0.075);
                     int btnY = scr.Y + scr.Height / 2 + (int)(scr.Height * 0.16);
                     _log("CDA: 🖱 'Взяти замовлення'...");
@@ -213,7 +226,7 @@ public sealed class CdaModule : IModule
                         _log("CDA: ⏱ Діалог коду не з'явився за 15с. Повертаюся до пошуку.");
                         waitingForCode = false;
                         codeZone       = null;
-                        Thread.Sleep(500);
+                        CancellableSleep(500);
                         continue;
                     }
 
@@ -221,7 +234,7 @@ public sealed class CdaModule : IModule
                     if (codeZone == null && now >= nextDialogSearch)
                     {
                         _log("CDA: 🔍 Шукаю діалог коду...");
-                        var detected = TessOcr.FindDialogRegion(_cfg.MonitorIndex);
+                        var detected = PaddleHelper.FindDialogRegion(_cfg.MonitorIndex);
                         if (detected != null)
                         {
                             var z = detected.Value;
@@ -263,7 +276,7 @@ public sealed class CdaModule : IModule
                         }
                     }
 
-                    Thread.Sleep(50);
+                    if (_running) Thread.Sleep(50);
                 }
             }
             catch (Exception ex)

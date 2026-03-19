@@ -19,7 +19,16 @@
       "Read(//d/Projects/git/CDA/**)",
       "Bash(find D:/Projects/git/CDA -name *.csproj)",
       "Bash(mkdir -p \"D:/Projects/git/GTA-Ukraine-scripts/ScriptedWpf/Cogs/cda/ton_templates\")",
-      "Bash(cp \"D:/Projects/git/CDA/Нова папка/cda/ton_templates/\"*.png \"D:/Projects/git/GTA-Ukraine-scripts/ScriptedWpf/Cogs/cda/ton_templates/\")"
+      "Bash(cp \"D:/Projects/git/CDA/Нова папка/cda/ton_templates/\"*.png \"D:/Projects/git/GTA-Ukraine-scripts/ScriptedWpf/Cogs/cda/ton_templates/\")",
+      "Bash(dotnet restore:*)",
+      "Bash(powershell -Command \":*)",
+      "Bash(unzip -l sdcb.paddleocr.2.5.0.nupkg)",
+      "WebFetch(domain:github.com)",
+      "WebSearch",
+      "WebFetch(domain:www.nuget.org)",
+      "Bash(grep -v \"^$\")",
+      "Bash(grep -vE \"^\\\\s*$|System\\\\.|<>|__\")",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }
