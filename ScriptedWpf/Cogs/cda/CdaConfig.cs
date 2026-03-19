@@ -8,28 +8,14 @@ namespace ScriptedWpf.Cogs.Cda;
 
 public class CdaConfig
 {
-    // ── Code zone (manual mode / auto-detected fallback) ──────────────────────
-    [JsonPropertyName("x1")]                public int    X1                { get; set; } = 704;
-    [JsonPropertyName("y1")]                public int    Y1                { get; set; } = 229;
-    [JsonPropertyName("x2")]                public int    X2                { get; set; } = 1213;
-    [JsonPropertyName("y2")]                public int    Y2                { get; set; } = 841;
-    [JsonPropertyName("turbo")]             public bool   Turbo             { get; set; } = true;
+    [JsonPropertyName("monitorIndex")]      public int    MonitorIndex      { get; set; } = -1;
+    [JsonPropertyName("x")]                 public int    X                 { get; set; }
+    [JsonPropertyName("y")]                 public int    Y                 { get; set; }
+    [JsonPropertyName("width")]             public int    Width             { get; set; }
+    [JsonPropertyName("height")]            public int    Height            { get; set; }
+    [JsonPropertyName("minPrice")]          public int    MinPrice          { get; set; } = 1000;
+    [JsonPropertyName("maxTon")]            public double MaxTon            { get; set; } = 5.0;
     [JsonPropertyName("showNotifications")] public bool   ShowNotifications { get; set; } = true;
-
-    // ── Auto mode ─────────────────────────────────────────────────────────────
-    [JsonPropertyName("autoMode")]     public bool   AutoMode     { get; set; } = false;
-    [JsonPropertyName("monitorIndex")] public int    MonitorIndex { get; set; } = -1;
-    [JsonPropertyName("minPrice")]     public int    MinPrice     { get; set; } = 1500;
-    [JsonPropertyName("maxTon")]       public double MaxTon       { get; set; } = 5.0;
-
-    // ── Scan zone for orders (0,0,0,0 = full monitor) ─────────────────────────
-    [JsonPropertyName("scanX1")] public int ScanX1 { get; set; } = 0;
-    [JsonPropertyName("scanY1")] public int ScanY1 { get; set; } = 0;
-    [JsonPropertyName("scanX2")] public int ScanX2 { get; set; } = 0;
-    [JsonPropertyName("scanY2")] public int ScanY2 { get; set; } = 0;
-
-    public bool HasScanZone => ScanX2 > ScanX1 && ScanY2 > ScanY1;
-
     [JsonPropertyName("types")]
     public List<string> Types { get; set; } = new()
     {

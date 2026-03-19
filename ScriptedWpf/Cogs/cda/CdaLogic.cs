@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
-using SysImgFmt = System.Drawing.Imaging.ImageFormat;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -12,160 +11,57 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using OpenCvSharp;
-using Point     = System.Drawing.Point;
-using Rectangle = System.Drawing.Rectangle;
 using Sdcb.PaddleOCR;
 using Sdcb.PaddleOCR.Models;
 using Sdcb.PaddleOCR.Models.Online;
-using Sdcb.PaddleInference;
+using ScriptedWpf.Core;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
 using Windows.Storage.Streams;
-using ScriptedWpf.Core;
+
+using SysPoint     = System.Drawing.Point;
+using SysRect      = System.Drawing.Rectangle;
+using SysBitmap    = System.Drawing.Bitmap;
+using SysGraphics  = System.Drawing.Graphics;
 
 namespace ScriptedWpf.Cogs.Cda;
 
-// ── Screen Capture (shared — used by other modules: hlorka, wires) ────────────
-public static class ScreenCapture
+// ── Screen Capture ────────────────────────────────────────────────────────────
+static class ScreenCapture
 {
-    public static Bitmap Capture(Rectangle r)
+    public static SysBitmap Capture(SysRect r)
     {
-        var bmp = new Bitmap(r.Width, r.Height, PixelFormat.Format32bppArgb);
-        using var g = Graphics.FromImage(bmp);
-        g.CopyFromScreen(r.Location, Point.Empty, r.Size);
+        var bmp = new SysBitmap(r.Width, r.Height, PixelFormat.Format32bppArgb);
+        using var g = SysGraphics.FromImage(bmp);
+        g.CopyFromScreen(r.Location, SysPoint.Empty, r.Size);
         return bmp;
     }
-}
 
-// ── Code detection (Windows OCR, no extra dependencies) ──────────────────────
-static class CdaLogic
-{
-    const int MARGIN = 20;
-
-    static readonly OcrEngine _ocr =
-        OcrEngine.TryCreateFromUserProfileLanguages()
-        ?? OcrEngine.TryCreateFromLanguage(new Windows.Globalization.Language("en-US"))
-        ?? throw new Exception("Windows OCR недоступний");
-
-    public static Rectangle GetRegion(CdaConfig cfg) => new(
-        cfg.X1 - MARGIN, cfg.Y1 - MARGIN,
-        (cfg.X2 - cfg.X1) + MARGIN * 2,
-        (cfg.Y2 - cfg.Y1) + MARGIN * 2);
-
-    public static unsafe Bitmap Preprocess(Bitmap src)
+    // For Windows OCR code detection
+    public static unsafe SysBitmap Preprocess(SysBitmap src)
     {
-        var dst   = new Bitmap(src.Width, src.Height, PixelFormat.Format32bppArgb);
-        var sData = src.LockBits(new Rectangle(0, 0, src.Width, src.Height),
-                        ImageLockMode.ReadOnly,  PixelFormat.Format32bppArgb);
-        var dData = dst.LockBits(new Rectangle(0, 0, dst.Width, dst.Height),
-                        ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
-
-        byte* s = (byte*)sData.Scan0;
-        byte* d = (byte*)dData.Scan0;
-
+        var dst   = new SysBitmap(src.Width, src.Height, PixelFormat.Format32bppArgb);
+        var sData = src.LockBits(new SysRect(0, 0, src.Width, src.Height), ImageLockMode.ReadOnly,  PixelFormat.Format32bppArgb);
+        var dData = dst.LockBits(new SysRect(0, 0, dst.Width, dst.Height), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+        byte* s = (byte*)sData.Scan0, d = (byte*)dData.Scan0;
         for (int y = 0; y < src.Height; y++)
         {
-            byte* sRow = s + y * sData.Stride;
-            byte* dRow = d + y * dData.Stride;
+            byte* sRow = s + y * sData.Stride, dRow = d + y * dData.Stride;
             for (int x = 0; x < src.Width; x++)
             {
                 int b = sRow[x * 4], g = sRow[x * 4 + 1], r = sRow[x * 4 + 2];
                 int gray = (int)(r * 0.299 + g * 0.587 + b * 0.114);
                 gray = Math.Clamp((int)((gray - 128) * 3.0 + 128), 0, 255);
                 byte bw = gray < 128 ? (byte)0 : (byte)255;
-                dRow[x * 4]     = bw;
-                dRow[x * 4 + 1] = bw;
-                dRow[x * 4 + 2] = bw;
-                dRow[x * 4 + 3] = 255;
+                dRow[x * 4] = bw; dRow[x * 4 + 1] = bw; dRow[x * 4 + 2] = bw; dRow[x * 4 + 3] = 255;
             }
         }
-
-        src.UnlockBits(sData);
-        dst.UnlockBits(dData);
+        src.UnlockBits(sData); dst.UnlockBits(dData);
         return dst;
     }
-
-    static async Task<SoftwareBitmap> ToSoftwareBitmapAsync(Bitmap bmp)
-    {
-        using var ms  = new MemoryStream();
-        bmp.Save(ms, SysImgFmt.Png);
-        ms.Position = 0;
-
-        using var ras = new InMemoryRandomAccessStream();
-        using var dw  = new DataWriter(ras.GetOutputStreamAt(0));
-        dw.WriteBytes(ms.ToArray());
-        await dw.StoreAsync();
-
-        var decoder = await BitmapDecoder.CreateAsync(ras);
-        return await decoder.GetSoftwareBitmapAsync(
-            BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
-    }
-
-    public static async Task<string?> FindCodeAsync(Bitmap img)
-    {
-        using var processed = Preprocess(img);
-        using var upscaled  = Upscale(processed, 3);
-        using var soft      = await ToSoftwareBitmapAsync(upscaled);
-
-        var result = await _ocr.RecognizeAsync(soft);
-        var text   = result.Text;
-
-        var spaced = Regex.Match(text, @"(\d)\s*(\d)\s*(\d)\s*(\d)\s*(\d)\s*(\d)");
-        if (spaced.Success)
-            return string.Concat(
-                spaced.Groups[1].Value, spaced.Groups[2].Value,
-                spaced.Groups[3].Value, spaced.Groups[4].Value,
-                spaced.Groups[5].Value, spaced.Groups[6].Value);
-
-        var digits = Regex.Replace(text, @"[^\d]", "");
-        return digits.Length >= 6 ? digits[..6] : null;
-    }
-
-    static Bitmap Upscale(Bitmap src, int scale)
-    {
-        var dst = new Bitmap(src.Width * scale, src.Height * scale, PixelFormat.Format32bppArgb);
-        using var g = Graphics.FromImage(dst);
-        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
-        g.DrawImage(src, 0, 0, dst.Width, dst.Height);
-        return dst;
-    }
-
-    // ── Keyboard input ────────────────────────────────────────────────────────
-
-    public static void TypeCode(string code, bool turbo)
-    {
-        int sz = Marshal.SizeOf<WinApi.INPUT>();
-
-        if (turbo)
-        {
-            var inputs = new WinApi.INPUT[code.Length * 2];
-            for (int i = 0; i < code.Length; i++)
-            {
-                ushort vk = (ushort)(0x30 + (code[i] - '0'));
-                inputs[i * 2]     = MakeKey(vk, false);
-                inputs[i * 2 + 1] = MakeKey(vk, true);
-            }
-            WinApi.SendInput((uint)inputs.Length, inputs, sz);
-        }
-        else
-        {
-            foreach (char c in code)
-            {
-                ushort vk = (ushort)(0x30 + (c - '0'));
-                WinApi.SendInput(2, [MakeKey(vk, false), MakeKey(vk, true)], sz);
-                Thread.Sleep(20);
-            }
-        }
-    }
-
-    static WinApi.INPUT MakeKey(ushort vk, bool up) => new()
-    {
-        type = WinApi.INPUT_KEYBOARD,
-        u    = new WinApi.INPUTUNION { ki = new WinApi.KEYBDINPUT { wVk = vk, dwFlags = up ? WinApi.KEYEVENTF_KEYUP : 0 } }
-    };
 }
 
-// ── Levenshtein distance ──────────────────────────────────────────────────────
+// ── Levenshtein ───────────────────────────────────────────────────────────────
 static class Levenshtein
 {
     public static int Distance(string a, string b)
@@ -175,246 +71,313 @@ static class Levenshtein
         for (int j = 0; j <= b.Length; j++) d[0, j] = j;
         for (int i = 1; i <= a.Length; i++)
             for (int j = 1; j <= b.Length; j++)
-                d[i, j] = a[i - 1] == b[j - 1]
-                    ? d[i - 1, j - 1]
-                    : 1 + Math.Min(d[i - 1, j - 1], Math.Min(d[i - 1, j], d[i, j - 1]));
+                d[i, j] = a[i-1] == b[j-1] ? d[i-1, j-1] : 1 + Math.Min(d[i-1, j-1], Math.Min(d[i-1, j], d[i, j-1]));
         return d[a.Length, b.Length];
     }
 }
 
-// ── PaddleOCR helper (замінює Tesseract) ─────────────────────────────────────
+// ── Windows OCR — лише для 6-значного коду ────────────────────────────────────
+static class WinOcr
+{
+    static OcrEngine? _engine;
+    static OcrEngine Engine => _engine ??= CreateEngine();
+
+    static OcrEngine CreateEngine()
+    {
+        foreach (var tag in new[] { "uk-UA", "ru", "ru-RU" })
+        {
+            var e = OcrEngine.TryCreateFromLanguage(new Windows.Globalization.Language(tag));
+            if (e != null) return e;
+        }
+        return OcrEngine.TryCreateFromUserProfileLanguages()
+            ?? OcrEngine.TryCreateFromLanguage(new Windows.Globalization.Language("en-US"))!;
+    }
+
+    static async Task<SoftwareBitmap> ToSoftwareBitmapAsync(SysBitmap bmp)
+    {
+        using var ms  = new MemoryStream();
+        bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+        ms.Position = 0;
+        using var ras = new InMemoryRandomAccessStream();
+        using var dw  = new DataWriter(ras.GetOutputStreamAt(0));
+        dw.WriteBytes(ms.ToArray());
+        await dw.StoreAsync();
+        var decoder = await BitmapDecoder.CreateAsync(ras);
+        return await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
+    }
+
+    static SysBitmap Upscale(SysBitmap src, int scale)
+    {
+        var dst = new SysBitmap(src.Width * scale, src.Height * scale, PixelFormat.Format32bppArgb);
+        using var g = SysGraphics.FromImage(dst);
+        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+        g.DrawImage(src, 0, 0, dst.Width, dst.Height);
+        return dst;
+    }
+
+    public static async Task<(string? code, string raw)> FindCodeAsync(SysBitmap img)
+    {
+        using var processed = ScreenCapture.Preprocess(img);
+        using var upscaled  = Upscale(processed, 3);
+        using var soft      = await ToSoftwareBitmapAsync(upscaled);
+        var result = await Engine.RecognizeAsync(soft);
+        string raw = result.Text.Trim();
+        var spaced = Regex.Match(raw, @"(\d)\s*(\d)\s*(\d)\s*(\d)\s*(\d)\s*(\d)");
+        if (spaced.Success)
+            return (string.Concat(spaced.Groups[1].Value, spaced.Groups[2].Value,
+                                  spaced.Groups[3].Value, spaced.Groups[4].Value,
+                                  spaced.Groups[5].Value, spaced.Groups[6].Value), raw);
+        var digits = Regex.Replace(raw, @"[^\d]", "");
+        return (digits.Length >= 6 ? digits[..6] : null, raw);
+    }
+
+    public static SysRect GetMonitorBounds(int monitorIndex)
+    {
+        var screens = Screen.AllScreens;
+        if (monitorIndex >= 0 && monitorIndex < screens.Length) return screens[monitorIndex].Bounds;
+        return Screen.PrimaryScreen!.Bounds;
+    }
+}
+
+// ── PaddleOCR Helper ──────────────────────────────────────────────────────────
 static class PaddleHelper
 {
-    // Два движки: English (для тоннажу/рівня/ціни) та Cyrillic (для типу вантажу і діалогу)
-    static PaddleOcrAll? _eng, _cyr;
-    static readonly object _engLock = new();
-    static readonly object _cyrLock = new();
+    // Both engines set atomically — або обидва готові, або жоден
+    static (PaddleOcrAll eng, PaddleOcrAll cyr)? _engines;
+    static readonly object _initLock  = new();
+    static bool _initStarted;
 
-    // Завантажує модель з інтернету (~50 MB за раз, кешується локально)
-    static FullOcrModel DownloadModel(bool cyr)
-    {
-        // OnlineFullModels.EnglishV3 = det(EnglishV3) + cls(ChineseMobileV2) + rec(EnglishV3)
-        // Для кирилиці замінюємо лише recognizer на CyrillicV3
-        var onlineModels = cyr
-            ? new OnlineFullModels(
-                OnlineDetectionModel.EnglishV3,
-                OnlineClassificationModel.ChineseMobileV2,
-                LocalDictOnlineRecognizationModel.CyrillicV3)
-            : OnlineFullModels.EnglishV3;
-        return onlineModels.DownloadAsync().GetAwaiter().GetResult();
-    }
+    public static bool IsReady { get { lock (_initLock) return _engines.HasValue; } }
 
-    static PaddleOcrAll MakeEngine(FullOcrModel model) => new(model)
-    {
-        AllowRotateDetection    = false,
-        Enable180Classification = false,
-    };
-
-    /// <summary>
-    /// Ініціалізує двигуни PaddleOCR. Моделі (~50 MB) завантажуються автоматично
-    /// до %USERPROFILE%\.paddlesharp\models при першому запуску.
-    /// </summary>
     public static void EnsureInit(Action<string> log)
     {
-        if (_eng != null && _cyr != null) return;
-        log("[CDA] Завантаження PaddleOCR моделей (~50 MB, кешується)...");
-        try
+        lock (_initLock)
         {
-            var engModel = DownloadModel(cyr: false);
-            var cyrModel = DownloadModel(cyr: true);
-            lock (_engLock) _eng ??= MakeEngine(engModel);
-            lock (_cyrLock) _cyr ??= MakeEngine(cyrModel);
-            log("[CDA] PaddleOCR готовий.");
+            if (_initStarted) return;
+            _initStarted = true;
         }
-        catch (Exception ex) { log($"[CDA] ❌ PaddleOCR: {ex.Message}"); }
+        Task.Run(() =>
+        {
+            try
+            {
+                log("[CDA] Завантаження PaddleOCR (~50 MB, кешується)...");
+                var engModel = OnlineFullModels.EnglishV3.DownloadAsync().GetAwaiter().GetResult();
+                var cyrModel = new OnlineFullModels(
+                    OnlineDetectionModel.EnglishV3,
+                    OnlineClassificationModel.ChineseMobileV2,
+                    LocalDictOnlineRecognizationModel.CyrillicV3
+                ).DownloadAsync().GetAwaiter().GetResult();
+
+                var eng = new PaddleOcrAll(engModel) { AllowRotateDetection = false, Enable180Classification = false };
+                var cyr = new PaddleOcrAll(cyrModel) { AllowRotateDetection = false, Enable180Classification = false };
+                lock (_initLock) _engines = (eng, cyr);  // атомарно
+                log("[CDA] PaddleOCR готовий.");
+            }
+            catch (Exception ex) { log($"[CDA] ❌ PaddleOCR init: {ex.Message}"); }
+        });
     }
 
-    /// <summary>Конвертує System.Drawing.Bitmap у OpenCV Mat (BGR).</summary>
-    public static Mat BitmapToMat(Bitmap bmp)
+    public static Mat BitmapToMat(SysBitmap bmp)
     {
-        var bd = bmp.LockBits(new System.Drawing.Rectangle(0, 0, bmp.Width, bmp.Height),
+        var bd = bmp.LockBits(new SysRect(0, 0, bmp.Width, bmp.Height),
                      ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
         try
         {
-            // Format32bppArgb у пам'яті = BGRA на little-endian
             using var bgra = new Mat(bmp.Height, bmp.Width, MatType.CV_8UC4, bd.Scan0, bd.Stride);
             return bgra.CvtColor(ColorConversionCodes.BGRA2BGR);
         }
         finally { bmp.UnlockBits(bd); }
     }
 
-    /// <summary>Детекція + розпізнавання тексту на Bitmap.</summary>
-    public static PaddleOcrResultRegion[] Detect(Bitmap bmp, bool cyr = false)
+    /// <summary>Зчитує весь текст з bitmap. cyr=true → кириличний движок.</summary>
+    public static string DetectText(SysBitmap bmp, bool cyr = false)
     {
-        if (cyr ? _cyr == null : _eng == null) return Array.Empty<PaddleOcrResultRegion>();
+        (PaddleOcrAll eng, PaddleOcrAll cyr)? engines;
+        lock (_initLock) engines = _engines;
+        if (!engines.HasValue) return "";
         using var mat = BitmapToMat(bmp);
-        if (cyr) { lock (_cyrLock) return _cyr!.Run(mat).Regions; }
-        else     { lock (_engLock) return _eng!.Run(mat).Regions; }
+        var engine = cyr ? engines.Value.cyr : engines.Value.eng;
+        lock (engine)
+        {
+            var regions = engine.Run(mat).Regions;
+            return string.Join(" ", regions.Select(r => r.Text));
+        }
     }
 
-    public static System.Drawing.Rectangle GetMonitorBounds(int monitorIndex)
-    {
-        var screens = Screen.AllScreens;
-        return monitorIndex >= 0 && monitorIndex < screens.Length
-            ? screens[monitorIndex].Bounds
-            : Screen.PrimaryScreen!.Bounds;
-    }
+    public static SysRect GetMonitorBounds(int monitorIndex)
+        => WinOcr.GetMonitorBounds(monitorIndex);
 
-    /// <summary>
-    /// Сканує монітор на наявність діалогу "Введіть код підтвердження".
-    /// Повертає координати поля вводу або null.
-    /// </summary>
-    public static System.Drawing.Rectangle? FindDialogRegion(int monitorIndex = -1)
+    /// <summary>Шукає діалог "введіть код підтвердження" на екрані через PaddleOCR.</summary>
+    public static SysRect? FindDialogRegion(int monitorIndex = -1)
     {
-        if (_cyr == null) return null;
+        if (!IsReady) return null;
         var screen = GetMonitorBounds(monitorIndex);
         using var bmp = ScreenCapture.Capture(screen);
-        var regions = Detect(bmp, cyr: true);
-
-        const string target = "введіть код підтвердження щоб взяти замовлення";
-        PaddleOcrResultRegion best = default;
-        int bestDist = int.MaxValue;
+        (PaddleOcrAll eng, PaddleOcrAll cyr) engines;
+        lock (_initLock) engines = _engines!.Value;
+        using var mat = BitmapToMat(bmp);
+        PaddleOcrResultRegion[] regions;
+        lock (engines.cyr) regions = engines.cyr.Run(mat).Regions;
 
         foreach (var region in regions)
         {
-            var text = region.Text.ToLower();
-            if (!text.Contains("код") && !text.Contains("підтверд") && !text.Contains("введіть"))
-                continue;
-            string norm = Regex.Replace(text, @"[^\w\s]", " ").Trim();
-            int d = Levenshtein.Distance(norm, target);
-            if (d < bestDist) { bestDist = d; best = region; }
+            string text = region.Text.ToLowerInvariant();
+            if ((text.Contains("код") && text.Contains("підтвердж")) ||
+                (text.Contains("введіть") && text.Contains("код")))
+            {
+                var rect = region.Rect.BoundingRect();
+                int w = 600;
+                int x = Math.Max(screen.X, screen.X + rect.X + rect.Width / 2 - w / 2);
+                int y = screen.Y + rect.Y + rect.Height + 5;
+                return new SysRect(x, y, Math.Min(w, screen.Right - x), 60);
+            }
         }
-
-        if (bestDist > 30 || bestDist == int.MaxValue) return null;
-
-        var b  = best.Rect.BoundingRect();
-        float sx = (float)bmp.Width / screen.Width, sy = (float)bmp.Height / screen.Height;
-        int w = 600, x = (bmp.Width - w) / 2;
-        return new System.Drawing.Rectangle(
-            screen.X + (int)(x  / sx),
-            screen.Y + (int)((b.Y + b.Height) / sy),
-            (int)(w  / sx),
-            (int)(60 / sy));
+        return null;
     }
 }
 
-// ── Order scanner ─────────────────────────────────────────────────────────────
+// ── Order Scanner ─────────────────────────────────────────────────────────────
 static class OrderScanner
 {
     public class OrderCard
     {
-        public Point  Anchor;
-        public int    PricePerKm;
-        public double Tonnage;
-        public int    Level;
-        public string Type       = "";
-        public Point  ClickPoint;
+        public SysPoint Anchor;
+        public int      PricePerKm;
+        public double   Tonnage;
+        public int      Level;
+        public string   Type       = "";
+        public SysPoint ClickPoint;
     }
 
     static readonly double[] ValidTons = { 0.5, 1.5, 3.0, 5.0 };
 
-    public static List<OrderCard> FindCards(int monitorIndex,
-                                            Rectangle? scanZone = null,
-                                            double     maxTon   = 5.0)
+    /// <summary>Знаходить картки замовлень на екрані. isCancelled перевіряється між картками.</summary>
+    public static List<OrderCard> FindCards(int monitorIndex, Func<bool>? isCancelled = null)
     {
-        var cards  = new List<OrderCard>();
-        var screen = scanZone ?? PaddleHelper.GetMonitorBounds(monitorIndex);
+        var screen  = WinOcr.GetMonitorBounds(monitorIndex);
         using var bmp = ScreenCapture.Capture(screen);
-
+        var cards   = new List<OrderCard>();
         var anchors = FindGreenPriceAnchors(bmp);
         if (anchors.Count == 0) return cards;
 
         foreach (var anchor in anchors)
         {
-            var (ton, lvl, type) = ReadBadge(bmp, anchor);
-            if (ton > 0 && ton > maxTon) continue;
+            if (isCancelled?.Invoke() == true) break;
+
             int price = ReadPrice(bmp, anchor);
+            if (isCancelled?.Invoke() == true) break;
+
+            var (tonnage, level, orderType) = ReadBadge(bmp, anchor);
+
+            // Кнопка "Натисніть, щоб переглянути" = anchor + ~130px вправо + ~50px вниз
+            int btnX = screen.X + anchor.X + 130;
+            int btnY = screen.Y + anchor.Y + 50;
             cards.Add(new OrderCard
             {
                 Anchor     = anchor,
                 PricePerKm = price,
-                Tonnage    = ton,
-                Level      = lvl,
-                Type       = type,
-                ClickPoint = new Point(screen.X + anchor.X + 130, screen.Y + anchor.Y + 50),
+                Tonnage    = tonnage,
+                Level      = level,
+                Type       = orderType,
+                ClickPoint = new SysPoint(btnX, btnY)
             });
         }
         return cards;
     }
 
-    // ── Price reading (English PaddleOCR) ─────────────────────────────────────
-
-    static int ReadPrice(Bitmap bmp, Point anchor)
+    static SysBitmap Upscale(SysBitmap src, int scale)
     {
-        var r = new Rectangle(anchor.X - 10, anchor.Y + 25, 240, 40);
-        if (r.Right > bmp.Width || r.Bottom > bmp.Height || r.X < 0) return 0;
+        var dst = new SysBitmap(src.Width * scale, src.Height * scale, PixelFormat.Format32bppArgb);
+        using var g = SysGraphics.FromImage(dst);
+        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+        g.DrawImage(src, 0, 0, dst.Width, dst.Height);
+        return dst;
+    }
+
+    // Anchor = перший зелений піксель основної ціни ($XX XXX)
+    // per-km ціна (≈ $X/km.) знаходиться на ~25px нижче anchor
+    static int ReadPrice(SysBitmap bmp, SysPoint anchor)
+    {
+        int x0 = Math.Max(0, anchor.X - 10);
+        int y0 = anchor.Y + 25;
+        if (y0 + 50 > bmp.Height) return 0;
+        var r = new SysRect(x0, y0, Math.Min(280, bmp.Width - x0), 50);
+        if (r.Width < 30) return 0;
+
         using var crop = bmp.Clone(r, bmp.PixelFormat);
         using var up   = Upscale(crop, 3);
-        string txt = string.Join("", PaddleHelper.Detect(up).Select(rg => rg.Text))
+
+        string txt = PaddleHelper.DetectText(up)
             .Replace(" ", "").Replace("O", "0").Replace("S", "5").Replace("s", "5");
+
+        // Шукаємо цифри після знаку $
         int di = txt.IndexOf('$');
         if (di >= 0 && di < txt.Length - 1) txt = txt[(di + 1)..];
         var m = Regex.Match(txt, @"\d+");
         return m.Success && int.TryParse(m.Value, out int p) ? p : 0;
     }
 
-    // ── Badge reading (English для тоннажу/рівня, Cyrillic для типу) ──────────
-
-    static (double ton, int lvl, string type) ReadBadge(Bitmap bmp, Point anchor)
+    // Badges ([1.5 T] [1 LVL] [Нафта]) знаходяться вище anchor
+    static (double ton, int lvl, string type) ReadBadge(SysBitmap bmp, SysPoint anchor)
     {
-        var r = new Rectangle(anchor.X - 10, anchor.Y - 55, 320, 45);
-        if (r.Right > bmp.Width || r.Y < 0 || r.X < 0) return (0, 1, "Невідомо");
-        using var crop = bmp.Clone(r, bmp.PixelFormat);
-        using var up   = Upscale(crop, 3);   // PaddleOCR працює на кольорових зображеннях
+        // Anchor = основна ціна. Badges = приблизно на 55-90px вище
+        int x0 = Math.Max(0, anchor.X - 10);
+        int y0 = Math.Max(0, anchor.Y - 100);
+        var r  = new SysRect(x0, y0, Math.Min(380, bmp.Width - x0), 85);
+        if (r.Width < 50) return (0, 1, "Невідомо");
 
-        // English: тоннаж + рівень
-        string eng = string.Join(" ", PaddleHelper.Detect(up).Select(rg => rg.Text))
-            .Replace("S","5").Replace("s","5").Replace("O","0").Replace("o","0").ToUpper();
+        using var crop = bmp.Clone(r, bmp.PixelFormat);
+        using var up   = Upscale(crop, 3);
+
+        // Англійський движок: тоннаж ("1.5 T") + рівень ("1 LVL")
+        string eng = PaddleHelper.DetectText(up)
+            .Replace("S", "5").Replace("s", "5").Replace("O", "0").Replace("o", "0")
+            .ToUpperInvariant();
 
         double ton = 0;
-        var tm = Regex.Match(eng, @"(\d+[.,]?\d*)\s*[tT]");
+        int    lvl = 1;
+
+        // [TТ] — Latin T або Cyrillic Т (PaddleOCR може повернути будь-яке)
+        var tm = Regex.Match(eng, @"(\d+[.,]?\d*)\s*[TТ]");
         if (tm.Success)
         {
             string raw = tm.Groups[1].Value.Replace(',', '.');
             double.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out ton);
-            // Виправлення помилки парсингу: "15" → "1.5"
-            if (!Array.Exists(ValidTons, t => Math.Abs(t - ton) < 0.01) && raw.Length >= 2)
+            // OCR міг загубити крапку: "15"→"1.5", "05"→"0.5"
+            if (!ValidTons.Contains(ton) && raw.Length >= 2)
             {
-                string candidate = raw[..^1] + "." + raw[^1..];
-                if (double.TryParse(candidate, NumberStyles.Any,
-                        CultureInfo.InvariantCulture, out double c)
-                    && Array.Exists(ValidTons, t => Math.Abs(t - c) < 0.01))
+                string cand = raw[..^1] + "." + raw[^1..];
+                if (double.TryParse(cand, NumberStyles.Any, CultureInfo.InvariantCulture, out double c)
+                    && ValidTons.Contains(c))
                     ton = c;
             }
         }
 
-        int lvl = 1;
-        var lm = Regex.Match(eng, @"(\d+)\s*[lL]");
+        var lm = Regex.Match(eng, @"(\d+)\s*LVL", RegexOptions.IgnoreCase);
         if (lm.Success) int.TryParse(lm.Groups[1].Value, out lvl);
 
-        // Cyrillic: тип вантажу
-        string ukr = string.Join(" ", PaddleHelper.Detect(up, cyr: true).Select(rg => rg.Text))
-            .ToLower();
+        // Кириличний движок: тип вантажу
+        string ukr = PaddleHelper.DetectText(up, cyr: true).ToLowerInvariant();
+
         string type =
-            ukr.Contains("одяг")    || ukr.Contains("модн")                                     ? "Одяг"          :
-            ukr.Contains("продукт") || ukr.Contains("харч")                                     ? "Продукти"      :
-            ukr.Contains("фарм")    || ukr.Contains("стерил") || ukr.Contains("аптек")          ? "Фармацевтика"  :
-            ukr.Contains("нафт")    || ukr.Contains("палив")                                     ? "Нафта"         :
-            ukr.Contains("авто")    || ukr.Contains("обслуг") || ukr.Contains("запчаст")        ? "Автозапчастини":
-            ukr.Contains("різн")    || ukr.Contains("світ")   || ukr.Contains("мобіл")          ? "Різне"         :
-            ukr.Contains("інш")     || ukr.Contains("спорядж")|| ukr.Contains("тактичн")        ? "Інше"          :
+            ukr.Contains("одяг")    || ukr.Contains("модн")                                       ? "Одяг"          :
+            ukr.Contains("продукт") || ukr.Contains("харч")                                       ? "Продукти"      :
+            ukr.Contains("фарм")    || ukr.Contains("стерил")  || ukr.Contains("аптек")           ? "Фармацевтика"  :
+            ukr.Contains("нафт")    || ukr.Contains("палив")                                      ? "Нафта"         :
+            ukr.Contains("авто")    || ukr.Contains("обслуг")  || ukr.Contains("запчаст")         ? "Автозапчастини":
+            ukr.Contains("різн")    || ukr.Contains("світ")    || ukr.Contains("мобіл")           ? "Різне"         :
+            ukr.Contains("інш")     || ukr.Contains("спорядж") || ukr.Contains("тактичн")         ? "Інше"          :
             "Невідомо";
 
         return (ton, lvl, type);
     }
 
-    // ── Anchor detection (green $/km badge color) ─────────────────────────────
-
-    static List<Point> FindGreenPriceAnchors(Bitmap bmp)
+    // Колір основної ціни ($XX XXX) — yellow-green (222,237,131) area
+    static List<SysPoint> FindGreenPriceAnchors(SysBitmap bmp)
     {
-        var anchors = new List<Point>();
-        var sData   = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height),
-                          ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        var anchors = new List<SysPoint>();
+        var sData   = bmp.LockBits(new SysRect(0, 0, bmp.Width, bmp.Height),
+                                   ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
         unsafe
         {
             byte* s = (byte*)sData.Scan0;
@@ -424,14 +387,12 @@ static class OrderScanner
                 for (int x = 0; x < bmp.Width; x++)
                 {
                     int b = row[x * 4], g = row[x * 4 + 1], r = row[x * 4 + 2];
-                    // rgba(222,237,131) — green-yellow price badge color
                     if (r >= 205 && r <= 240 && g >= 220 && g <= 250 && b >= 115 && b <= 148)
                     {
                         bool isNew = true;
                         foreach (var p in anchors)
-                            if (Math.Abs(p.X - x) < 200 && Math.Abs(p.Y - y) < 150)
-                            { isNew = false; break; }
-                        if (isNew) anchors.Add(new Point(x, y));
+                            if (Math.Abs(p.X - x) < 200 && Math.Abs(p.Y - y) < 150) { isNew = false; break; }
+                        if (isNew) anchors.Add(new SysPoint(x, y));
                     }
                 }
             }
@@ -439,28 +400,51 @@ static class OrderScanner
         bmp.UnlockBits(sData);
         return anchors;
     }
+}
 
-    // ── Image helpers ─────────────────────────────────────────────────────────
-
-    static Bitmap Upscale(Bitmap src, int scale)
+// ── Keyboard Input ────────────────────────────────────────────────────────────
+static class KeyInput
+{
+    static WinApi.INPUT Key(ushort vk, bool up) => new()
     {
-        var dst = new Bitmap(src.Width * scale, src.Height * scale, PixelFormat.Format32bppArgb);
-        using var g = Graphics.FromImage(dst);
-        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-        g.DrawImage(src, 0, 0, dst.Width, dst.Height);
-        return dst;
+        type = WinApi.INPUT_KEYBOARD,
+        u    = new WinApi.INPUTUNION { ki = new WinApi.KEYBDINPUT { wVk = vk, dwFlags = up ? WinApi.KEYEVENTF_KEYUP : 0 } }
+    };
+
+    public static void TypeCode(string code, bool turbo = true)
+    {
+        int size = Marshal.SizeOf<WinApi.INPUT>();
+        if (turbo)
+        {
+            var inputs = new WinApi.INPUT[code.Length * 2];
+            for (int i = 0; i < code.Length; i++)
+            {
+                ushort vk = (ushort)(0x30 + (code[i] - '0'));
+                inputs[i * 2] = Key(vk, false); inputs[i * 2 + 1] = Key(vk, true);
+            }
+            WinApi.SendInput((uint)inputs.Length, inputs, size);
+        }
+        else
+        {
+            foreach (char c in code)
+            {
+                ushort vk = (ushort)(0x30 + (c - '0'));
+                WinApi.SendInput(2, new[] { Key(vk, false), Key(vk, true) }, size);
+                Thread.Sleep(20);
+            }
+        }
     }
 }
 
-// ── Mouse input ───────────────────────────────────────────────────────────────
+// ── Mouse Input ───────────────────────────────────────────────────────────────
 static class MouseInput
 {
     public static void Click(int x, int y)
     {
         WinApi.SetCursorPos(x, y);
         Thread.Sleep(20);
-        WinApi.mouse_event(0x0002, 0, 0, 0, 0); // MOUSEEVENTF_LEFTDOWN
+        WinApi.mouse_event(0x0002, 0, 0, 0, 0);
         Thread.Sleep(20);
-        WinApi.mouse_event(0x0004, 0, 0, 0, 0); // MOUSEEVENTF_LEFTUP
+        WinApi.mouse_event(0x0004, 0, 0, 0, 0);
     }
 }
