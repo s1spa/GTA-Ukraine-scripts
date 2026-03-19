@@ -4,14 +4,16 @@ using System.Linq;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Shapes;
 using ScriptedWpf.Core;
 
 namespace ScriptedWpf.Cogs.Cda;
 
 public sealed class CdaModule : IModule
 {
-    enum BotState { Idle, AutoPilot, Manual }
+    enum BotState { Idle, AutoPilot }
 
     volatile BotState _state     = BotState.Idle;
     Action<string>    _log       = Console.WriteLine;
@@ -53,18 +55,6 @@ public sealed class CdaModule : IModule
         StateChanged?.Invoke();
     }
 
-    /// <summary>Ручний режим: тільки введення коду. Замовлення вибираєш сам.</summary>
-    public void StartManual()
-    {
-        if (_state != BotState.Idle) return;
-        if (_cfg.X > 0 && _codeZone == null)
-            _codeZone = new System.Drawing.Rectangle(_cfg.X, _cfg.Y, _cfg.Width, _cfg.Height);
-        _state = BotState.Manual;
-        new Thread(RunManual) { IsBackground = true }.Start();
-        Notify("Ручний режим", "Чекаю на код...");
-        StateChanged?.Invoke();
-    }
-
     void Notify(string title, string msg)
     {
         if (_cfg.ShowNotifications) ToastNotifier.Show($"CDA: {title}", msg, ToastIcon.Info);
@@ -87,20 +77,6 @@ public sealed class CdaModule : IModule
             }
         });
 
-        // F8 — ручний режим (тільки код)
-        hotkeys.Register(0, (uint)System.Windows.Forms.Keys.F8, () =>
-        {
-            if (_state == BotState.Manual)
-            {
-                _log("[CDA] F8 → ВИМКНЕНО");
-                Stop();
-            }
-            else if (_state == BotState.Idle)
-            {
-                _log("[CDA] F8 → РУЧНИЙ РЕЖИМ");
-                StartManual();
-            }
-        });
     }
 
     // ── Settings View ─────────────────────────────────────────────────────────
@@ -122,8 +98,8 @@ public sealed class CdaModule : IModule
         var instrBlock = new TextBlock
         {
             Text = "ІНСТРУКЦІЯ\n" +
-                   "• F7 — Автопілот: сам шукає найкраще замовлення, клікає та вводить код\n" +
-                   "• F8 — Ручний: вибираєш замовлення сам, бот вводить лише код\n" +
+                   "• F7 — вмикає / вимикає автопілот\n" +
+                   "• Автопілот сам шукає найкраще замовлення, клікає та вводить код\n" +
                    "• При першому запуску завантажується PaddleOCR (~50 MB, кешується)",
             Foreground   = textDim,
             FontSize     = 11,
@@ -145,6 +121,41 @@ public sealed class CdaModule : IModule
             grid.Children.Add(input);
             row++;
         }
+
+        // Зона коду
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var zonePanel = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 0, 0, 8) };
+
+        var zoneLbl = new TextBlock { Foreground = textDim, FontSize = 11, Margin = new Thickness(0, 0, 0, 4) };
+        void RefreshZoneLabel()
+        {
+            zoneLbl.Text = (_cfg.X > 0 && _cfg.Width > 0)
+                ? $"Зона коду: ({_cfg.X}, {_cfg.Y}) → ({_cfg.X + _cfg.Width}, {_cfg.Y + _cfg.Height})"
+                : "Зона коду: не задана";
+        }
+        RefreshZoneLabel();
+
+        var zoneBtn = new Button
+        {
+            Content             = "Виділити зону коду",
+            Padding             = new Thickness(12, 5, 12, 5),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Cursor              = Cursors.Hand,
+        };
+        zoneBtn.Click += (_, _) => OpenZoneSelector(zone =>
+        {
+            _codeZone   = zone;
+            _cfg.X      = zone.X; _cfg.Y = zone.Y;
+            _cfg.Width  = zone.Width; _cfg.Height = zone.Height;
+            _cfg.Save();
+            Application.Current.Dispatcher.Invoke(RefreshZoneLabel);
+        });
+
+        zonePanel.Children.Add(zoneLbl);
+        zonePanel.Children.Add(zoneBtn);
+        Grid.SetRow(zonePanel, row); Grid.SetColumnSpan(zonePanel, 2);
+        grid.Children.Add(zonePanel);
+        row++;
 
         // Монітор
         var monCb = new ComboBox { Width = 220, Height = 28 };
@@ -311,7 +322,6 @@ public sealed class CdaModule : IModule
                     if (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - clickTime > 15_000)
                     {
                         _log("[CDA] Меню коду не з'явилося за 15с. Повертаюся до пошуку.");
-                        _codeZone      = null;
                         waitingForMenu = false;
                         continue;
                     }
@@ -352,56 +362,113 @@ public sealed class CdaModule : IModule
         }
     }
 
-    // ── Manual (code-only) loop ───────────────────────────────────────────────
-    void RunManual()
+    // ── Zone Selector ─────────────────────────────────────────────────────────
+    void OpenZoneSelector(Action<System.Drawing.Rectangle> onSelected)
     {
-        try
+        var screen = System.Windows.Forms.Screen.AllScreens
+            .ElementAtOrDefault(Math.Max(0, _cfg.MonitorIndex))
+            ?? System.Windows.Forms.Screen.PrimaryScreen!;
+
+        // Отримуємо DPI головного вікна для конвертації logical → physical px
+        double dpiX = 1, dpiY = 1;
+        var mainSrc = PresentationSource.FromVisual(Application.Current.MainWindow);
+        if (mainSrc != null)
         {
-            _log("[CDA] РУЧНИЙ РЕЖИМ | Відкрий замовлення вручну → бот введе код автоматично");
-            long startTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-
-            while (_state == BotState.Manual)
-            {
-                if (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - startTime > 120_000)
-                {
-                    _log("[CDA] Ручний режим: таймаут 2 хв.");
-                    break;
-                }
-
-                var zone = GetOrFindCodeZone();
-                if (zone != null)
-                {
-                    using var img = ScreenCapture.Capture(zone.Value);
-                    if (_frameCounter++ % 5 == 0) OnFrame?.Invoke((System.Drawing.Bitmap)img.Clone());
-
-                    var (code, rawText) = WinOcr.FindCodeAsync(img).GetAwaiter().GetResult();
-                    if (!string.IsNullOrWhiteSpace(rawText) && code == null)
-                        _log($"[CDA] OCR: \"{rawText}\"");
-                    if (code != null)
-                    {
-                        _log($"[CDA] ✅ Код: {code} — вводжу...");
-                        Thread.Sleep(100);
-                        KeyInput.TypeCode(code);
-                        _log("[CDA] Готово! 🚚");
-                        _state = BotState.Idle;
-                        Notify("Готово!", $"Код {code} введено.");
-                        StateChanged?.Invoke();
-                        return;
-                    }
-                }
-                Thread.Sleep(60);
-            }
-
-            _state = BotState.Idle;
-            _log("[CDA] Ручний режим зупинено.");
-            StateChanged?.Invoke();
+            dpiX = mainSrc.CompositionTarget.TransformToDevice.M11;
+            dpiY = mainSrc.CompositionTarget.TransformToDevice.M22;
         }
-        catch (Exception ex)
+
+        // Розмір вікна в логічних пікселях WPF
+        double logW = screen.Bounds.Width  / dpiX;
+        double logH = screen.Bounds.Height / dpiY;
+
+        var overlay = new Window
         {
-            _log($"[CDA] ❌ {ex.Message}");
-            _state = BotState.Idle;
-            StateChanged?.Invoke();
-        }
+            WindowStyle        = WindowStyle.None,
+            AllowsTransparency = true,
+            Background         = new SolidColorBrush(Color.FromArgb(70, 0, 0, 0)),
+            Topmost            = true,
+            Left               = screen.Bounds.Left / dpiX,
+            Top                = screen.Bounds.Top  / dpiY,
+            Width              = logW,
+            Height             = logH,
+            Cursor             = Cursors.Cross,
+            ShowInTaskbar      = false,
+            ResizeMode         = ResizeMode.NoResize,
+        };
+
+        var root = new Grid { Background = Brushes.Transparent };
+        root.Children.Add(new TextBlock
+        {
+            Text                = "Виділіть зону де з'являється код  •  Esc — скасувати",
+            Foreground          = Brushes.White,
+            FontSize            = 15,
+            Background          = new SolidColorBrush(Color.FromArgb(160, 0, 0, 0)),
+            Padding             = new Thickness(14, 6, 14, 6),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment   = VerticalAlignment.Top,
+            Margin              = new Thickness(0, 20, 0, 0),
+            IsHitTestVisible    = false,
+        });
+
+        var canvas = new Canvas { Width = logW, Height = logH, Background = Brushes.Transparent };
+        root.Children.Add(canvas);
+        overlay.Content = root;
+
+        var selRect = new Rectangle
+        {
+            Stroke           = Brushes.LimeGreen,
+            StrokeThickness  = 2,
+            Fill             = new SolidColorBrush(Color.FromArgb(40, 0, 255, 0)),
+            Visibility       = Visibility.Collapsed,
+            IsHitTestVisible = false,
+        };
+        canvas.Children.Add(selRect);
+
+        System.Windows.Point origin = default;
+        bool dragging = false;
+
+        canvas.MouseLeftButtonDown += (_, e) =>
+        {
+            origin   = e.GetPosition(canvas);
+            dragging = true;
+            selRect.Visibility = Visibility.Visible;
+            Canvas.SetLeft(selRect, origin.X); Canvas.SetTop(selRect, origin.Y);
+            selRect.Width = selRect.Height = 0;
+            canvas.CaptureMouse();
+        };
+
+        canvas.MouseMove += (_, e) =>
+        {
+            if (!dragging) return;
+            var p = e.GetPosition(canvas);
+            Canvas.SetLeft(selRect, Math.Min(p.X, origin.X));
+            Canvas.SetTop(selRect,  Math.Min(p.Y, origin.Y));
+            selRect.Width  = Math.Abs(p.X - origin.X);
+            selRect.Height = Math.Abs(p.Y - origin.Y);
+        };
+
+        canvas.MouseLeftButtonUp += (_, e) =>
+        {
+            if (!dragging) return;
+            dragging = false;
+            canvas.ReleaseMouseCapture();
+
+            var p = e.GetPosition(canvas);
+            // Конвертуємо logical px → physical px
+            int rx = (int)(Math.Min(p.X, origin.X) * dpiX) + screen.Bounds.Left;
+            int ry = (int)(Math.Min(p.Y, origin.Y) * dpiY) + screen.Bounds.Top;
+            int rw = (int)(Math.Abs(p.X - origin.X) * dpiX);
+            int rh = (int)(Math.Abs(p.Y - origin.Y) * dpiY);
+
+            overlay.Close();
+
+            if (rw > 10 && rh > 10)
+                onSelected(new System.Drawing.Rectangle(rx, ry, rw, rh));
+        };
+
+        overlay.KeyDown += (_, e) => { if (e.Key == Key.Escape) overlay.Close(); };
+        overlay.ShowDialog();
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -409,16 +476,24 @@ public sealed class CdaModule : IModule
     System.Drawing.Rectangle? GetOrFindCodeZone()
     {
         if (_codeZone != null) return _codeZone;
-        if (!PaddleHelper.IsReady) return null;
 
+        // Спочатку — збережена зона з конфігу
+        if (_cfg.X > 0 && _cfg.Width > 0)
+        {
+            _codeZone = new System.Drawing.Rectangle(_cfg.X, _cfg.Y, _cfg.Width, _cfg.Height);
+            return _codeZone;
+        }
+
+        // Авто-пошук через PaddleOCR (якщо зону не виділено вручну)
+        if (!PaddleHelper.IsReady) return null;
         var found = PaddleHelper.FindDialogRegion(_cfg.MonitorIndex);
         if (found == null) return null;
 
         var z = found.Value;
-        _codeZone = new System.Drawing.Rectangle(z.X + 180, z.Y + 5, z.Width - 360, z.Height - 30);
-        _cfg.X     = _codeZone.Value.X;
-        _cfg.Y     = _codeZone.Value.Y;
-        _cfg.Width = _codeZone.Value.Width;
+        _codeZone   = new System.Drawing.Rectangle(z.X + 180, z.Y + 5, z.Width - 360, z.Height - 30);
+        _cfg.X      = _codeZone.Value.X;
+        _cfg.Y      = _codeZone.Value.Y;
+        _cfg.Width  = _codeZone.Value.Width;
         _cfg.Height = _codeZone.Value.Height;
         _cfg.Save();
         return _codeZone;
