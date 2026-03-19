@@ -207,15 +207,94 @@ static class PaddleHelper
     public static SysRect GetMonitorBounds(int monitorIndex)
         => WinOcr.GetMonitorBounds(monitorIndex);
 
-    /// <summary>Шукає діалог "введіть код підтвердження" на екрані через PaddleOCR.</summary>
     public static SysRect? FindDialogRegion(int monitorIndex = -1)
     {
         if (!IsReady) return null;
+
+        // Stage 1: Fast color-based search for a candidate region
         var screen = GetMonitorBounds(monitorIndex);
         using var bmp = ScreenCapture.Capture(screen);
+        var candidate = FindDialogRegionByColor(bmp);
+        if (!candidate.HasValue) return null;
+
+        // Stage 2: OCR confirmation on the small candidate region
+        return FindDialogRegionWithOcr(bmp, candidate.Value);
+    }
+    
+    static unsafe SysRect? FindDialogRegionByColor(SysBitmap bmp)
+    {
+        var data = bmp.LockBits(new SysRect(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        var rects = new List<SysRect>();
+        var visited = new bool[bmp.Width, bmp.Height];
+        byte* scan0 = (byte*)data.Scan0;
+
+        for (int y = 0; y < bmp.Height; y++)
+        {
+            for (int x = 0; x < bmp.Width; x++)
+            {
+                if (visited[x, y]) continue;
+                byte* p = scan0 + y * data.Stride + x * 4;
+                // Look for dark, semi-transparent pixels (typical for dialogs/overlays)
+                if (p[3] > 100 && p[0] < 50 && p[1] < 50 && p[2] < 50)
+                {
+                    var newRect = FloodFill(scan0, data.Stride, visited, x, y, bmp.Width, bmp.Height);
+                    if (newRect.Width * newRect.Height > 5000) // Filter small noise
+                        rects.Add(newRect);
+                }
+            }
+        }
+        bmp.UnlockBits(data);
+
+        if (rects.Count == 0) return null;
+
+        // Return the largest found rectangle
+        return rects.OrderByDescending(r => r.Width * r.Height).First();
+    }
+    
+    static unsafe SysRect FloodFill(byte* scan0, int stride, bool[,] visited, int startX, int startY, int w, int h)
+    {
+        var q = new Queue<SysPoint>();
+        q.Enqueue(new SysPoint(startX, startY));
+        visited[startX, startY] = true;
+        int minX = startX, maxX = startX, minY = startY, maxY = startY;
+
+        while (q.Count > 0)
+        {
+            var p = q.Dequeue();
+            minX = Math.Min(minX, p.X); maxX = Math.Max(maxX, p.X);
+            minY = Math.Min(minY, p.Y); maxY = Math.Max(maxY, p.Y);
+
+            for (int i = -1; i <= 1; i++)
+            {
+                for (int j = -1; j <= 1; j++)
+                {
+                    if (i == 0 && j == 0) continue;
+                    int nx = p.X + i, ny = p.Y + j;
+                    if (nx >= 0 && nx < w && ny >= 0 && ny < h && !visited[nx, ny])
+                    {
+                        byte* ptr = scan0 + ny * stride + nx * 4;
+                        if (ptr[3] > 100 && ptr[0] < 50 && ptr[1] < 50 && ptr[2] < 50)
+                        {
+                            visited[nx, ny] = true;
+                            q.Enqueue(new SysPoint(nx, ny));
+                        }
+                    }
+                }
+            }
+        }
+        return new SysRect(minX, minY, maxX - minX, maxY - minY);
+    }
+
+
+    /// <summary>Шукає діалог "введіть код підтвердження" на екрані через PaddleOCR.</summary>
+    static SysRect? FindDialogRegionWithOcr(SysBitmap bmp, SysRect? searchBounds = null)
+    {
+        if (!IsReady) return null;
+        var screen = searchBounds ?? new SysRect(0, 0, bmp.Width, bmp.Height);
+
         (PaddleOcrAll eng, PaddleOcrAll cyr) engines;
         lock (_initLock) engines = _engines!.Value;
-        using var mat = BitmapToMat(bmp);
+        using var mat = BitmapToMat(bmp.Clone(screen, bmp.PixelFormat));
         PaddleOcrResultRegion[] regions;
         lock (engines.cyr) regions = engines.cyr.Run(mat).Regions;
 
