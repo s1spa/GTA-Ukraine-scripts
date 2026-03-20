@@ -9,11 +9,10 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using OpenCvSharp;
-using Sdcb.PaddleOCR;
-using Sdcb.PaddleOCR.Models;
-using Sdcb.PaddleOCR.Models.Online;
+using System.IO;
+using System.Net.Http;
 using ScriptedWpf.Core;
+using Tesseract;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
 using Windows.Storage.Streams;
@@ -145,68 +144,67 @@ static class WinOcr
     }
 }
 
-// ── PaddleOCR Helper ──────────────────────────────────────────────────────────
-static class PaddleHelper
+// ── Tesseract OCR Helper ───────────────────────────────────────────────────────
+static class TessOcr
 {
-    // Both engines set atomically — або обидва готові, або жоден
-    static (PaddleOcrAll eng, PaddleOcrAll cyr)? _engines;
-    static readonly object _initLock  = new();
-    static bool _initStarted;
+    static TesseractEngine? _engine;
+    static readonly object  _lock        = new();
+    static bool             _initStarted;
 
-    public static bool IsReady { get { lock (_initLock) return _engines.HasValue; } }
+    static string TessDataDir => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tessdata");
+
+    public static bool IsReady { get { lock (_lock) return _engine != null; } }
 
     public static void EnsureInit(Action<string> log)
     {
-        lock (_initLock)
-        {
-            if (_initStarted) return;
-            _initStarted = true;
-        }
+        lock (_lock) { if (_initStarted) return; _initStarted = true; }
         Task.Run(() =>
         {
             try
             {
-                log("[CDA] Завантаження PaddleOCR (~50 MB, кешується)...");
-                var engModel = OnlineFullModels.EnglishV3.DownloadAsync().GetAwaiter().GetResult();
-                var cyrModel = new OnlineFullModels(
-                    OnlineDetectionModel.EnglishV3,
-                    OnlineClassificationModel.ChineseMobileV2,
-                    LocalDictOnlineRecognizationModel.CyrillicV3
-                ).DownloadAsync().GetAwaiter().GetResult();
-
-                var eng = new PaddleOcrAll(engModel) { AllowRotateDetection = false, Enable180Classification = false };
-                var cyr = new PaddleOcrAll(cyrModel) { AllowRotateDetection = false, Enable180Classification = false };
-                lock (_initLock) _engines = (eng, cyr);  // атомарно
-                log("[CDA] PaddleOCR готовий.");
+                EnsureTessdata(log);
+                var eng = new TesseractEngine(TessDataDir, "ukr+eng", EngineMode.Default);
+                lock (_lock) _engine = eng;
+                log("[CDA] Tesseract готовий.");
             }
-            catch (Exception ex) { log($"[CDA] ❌ PaddleOCR init: {ex.Message}"); }
+            catch (Exception ex) { log($"[CDA] ❌ Tesseract init: {ex.Message}"); }
         });
     }
 
-    public static Mat BitmapToMat(SysBitmap bmp)
+    static void EnsureTessdata(Action<string> log)
     {
-        var bd = bmp.LockBits(new SysRect(0, 0, bmp.Width, bmp.Height),
-                     ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        try
+        Directory.CreateDirectory(TessDataDir);
+        var files = new[]
         {
-            using var bgra = new Mat(bmp.Height, bmp.Width, MatType.CV_8UC4, bd.Scan0, bd.Stride);
-            return bgra.CvtColor(ColorConversionCodes.BGRA2BGR);
+            ("eng", "https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata"),
+            ("ukr", "https://github.com/tesseract-ocr/tessdata_fast/raw/main/ukr.traineddata"),
+        };
+        using var http = new HttpClient();
+        http.Timeout = TimeSpan.FromSeconds(60);
+        foreach (var (lang, url) in files)
+        {
+            var path = Path.Combine(TessDataDir, $"{lang}.traineddata");
+            if (File.Exists(path)) continue;
+            log($"[CDA] Завантаження tessdata/{lang}...");
+            var bytes = http.GetByteArrayAsync(url).GetAwaiter().GetResult();
+            File.WriteAllBytes(path, bytes);
+            log($"[CDA] tessdata/{lang} готово.");
         }
-        finally { bmp.UnlockBits(bd); }
     }
 
-    /// <summary>Зчитує весь текст з bitmap. cyr=true → кириличний движок.</summary>
-    public static string DetectText(SysBitmap bmp, bool cyr = false)
+    public static string DetectText(SysBitmap bmp)
     {
-        (PaddleOcrAll eng, PaddleOcrAll cyr)? engines;
-        lock (_initLock) engines = _engines;
-        if (!engines.HasValue) return "";
-        using var mat = BitmapToMat(bmp);
-        var engine = cyr ? engines.Value.cyr : engines.Value.eng;
+        TesseractEngine? engine;
+        lock (_lock) engine = _engine;
+        if (engine == null) return "";
+
+        using var ms  = new MemoryStream();
+        bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+        using var pix = Pix.LoadFromMemory(ms.ToArray());
         lock (engine)
         {
-            var regions = engine.Run(mat).Regions;
-            return string.Join(" ", regions.Select(r => r.Text));
+            using var page = engine.Process(pix);
+            return page.GetText().Trim();
         }
     }
 
@@ -216,51 +214,38 @@ static class PaddleHelper
     public static SysRect? FindDialogRegion(int monitorIndex = -1)
     {
         if (!IsReady) return null;
-
-        // Stage 1: Fast color-based search for a candidate region
         var screen = GetMonitorBounds(monitorIndex);
         using var bmp = ScreenCapture.Capture(screen);
-        var candidate = FindDialogRegionByColor(bmp);
+        var candidate = FindDialogCandidateByColor(bmp);
         if (!candidate.HasValue) return null;
-
-        // Stage 2: OCR confirmation on the small candidate region
-        return FindDialogRegionWithOcr(bmp, candidate.Value);
+        return ConfirmDialogWithOcr(bmp, candidate.Value);
     }
-    
-    static unsafe SysRect? FindDialogRegionByColor(SysBitmap bmp)
+
+    static unsafe SysRect? FindDialogCandidateByColor(SysBitmap bmp)
     {
-        var data = bmp.LockBits(new SysRect(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        var rects = new List<SysRect>();
-        // flat bool[] — краща локальність кешу ніж bool[,]
+        var data    = bmp.LockBits(new SysRect(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        var rects   = new List<SysRect>();
         var visited = new bool[bmp.Width * bmp.Height];
         byte* scan0 = (byte*)data.Scan0;
 
         for (int y = 0; y < bmp.Height; y++)
-        {
             for (int x = 0; x < bmp.Width; x++)
             {
                 if (visited[y * bmp.Width + x]) continue;
                 byte* p = scan0 + y * data.Stride + x * 4;
-                // Look for dark, semi-transparent pixels (typical for dialogs/overlays)
                 if (p[3] > 100 && p[0] < 50 && p[1] < 50 && p[2] < 50)
                 {
-                    var newRect = FloodFill(scan0, data.Stride, visited, x, y, bmp.Width, bmp.Height);
-                    if (newRect.Width * newRect.Height > 5000) // Filter small noise
-                        rects.Add(newRect);
+                    var r = FloodFill(scan0, data.Stride, visited, x, y, bmp.Width, bmp.Height);
+                    if (r.Width * r.Height > 5000) rects.Add(r);
                 }
             }
-        }
         bmp.UnlockBits(data);
-
         if (rects.Count == 0) return null;
-
-        // Return the largest found rectangle
         return rects.OrderByDescending(r => r.Width * r.Height).First();
     }
-    
+
     static unsafe SysRect FloodFill(byte* scan0, int stride, bool[] visited, int startX, int startY, int w, int h)
     {
-        // Stack замість Queue: краща продуктивність (менше алокацій, DFS замість BFS)
         var stack = new Stack<SysPoint>();
         stack.Push(new SysPoint(startX, startY));
         visited[startY * w + startX] = true;
@@ -273,7 +258,6 @@ static class PaddleHelper
             minY = Math.Min(minY, p.Y); maxY = Math.Max(maxY, p.Y);
 
             for (int i = -1; i <= 1; i++)
-            {
                 for (int j = -1; j <= 1; j++)
                 {
                     if (i == 0 && j == 0) continue;
@@ -288,36 +272,22 @@ static class PaddleHelper
                         }
                     }
                 }
-            }
         }
         return new SysRect(minX, minY, maxX - minX, maxY - minY);
     }
 
-
-    /// <summary>Шукає діалог "введіть код підтвердження" на екрані через PaddleOCR.</summary>
-    static SysRect? FindDialogRegionWithOcr(SysBitmap bmp, SysRect? searchBounds = null)
+    static SysRect? ConfirmDialogWithOcr(SysBitmap bmp, SysRect candidate)
     {
-        if (!IsReady) return null;
-        var screen = searchBounds ?? new SysRect(0, 0, bmp.Width, bmp.Height);
-
-        (PaddleOcrAll eng, PaddleOcrAll cyr) engines;
-        lock (_initLock) engines = _engines!.Value;
-        using var mat = BitmapToMat(bmp.Clone(screen, bmp.PixelFormat));
-        PaddleOcrResultRegion[] regions;
-        lock (engines.cyr) regions = engines.cyr.Run(mat).Regions;
-
-        foreach (var region in regions)
+        using var crop = bmp.Clone(candidate, bmp.PixelFormat);
+        string text = DetectText(crop).ToLowerInvariant();
+        if ((text.Contains("код") && text.Contains("підтвердж")) ||
+            (text.Contains("введіть") && text.Contains("код")))
         {
-            string text = region.Text.ToLowerInvariant();
-            if ((text.Contains("код") && text.Contains("підтвердж")) ||
-                (text.Contains("введіть") && text.Contains("код")))
-            {
-                var rect = region.Rect.BoundingRect();
-                int w = 600;
-                int x = Math.Max(screen.X, screen.X + rect.X + rect.Width / 2 - w / 2);
-                int y = screen.Y + rect.Y + rect.Height + 5;
-                return new SysRect(x, y, Math.Min(w, screen.Right - x), 60);
-            }
+            int w  = 600;
+            int cx = candidate.X + candidate.Width / 2;
+            int x  = Math.Max(0, cx - w / 2);
+            int y  = candidate.Y + candidate.Height / 2 + 10;
+            return new SysRect(x, y, Math.Min(w, bmp.Width - x), 60);
         }
         return null;
     }
@@ -397,23 +367,18 @@ static class OrderScanner
         if (br.Width < 50 || py0 + 50 > bmp.Height || pr.Width < 30)
             return (0, 0, 1, "Невідомо");
 
-        // Готуємо окремі bitmap-и для кожного потоку (Bitmap не thread-safe)
         using var badgeCrop = bmp.Clone(br, bmp.PixelFormat);
         using var badgeUp   = Upscale(badgeCrop, 3);
-        using var badgeUpCyr = (SysBitmap)badgeUp.Clone(); // окремий для cyr-потоку
-
         using var priceCrop = bmp.Clone(pr, bmp.PixelFormat);
         using var priceUp   = Upscale(priceCrop, 3);
 
-        string engBadge = "", ukr = "", engPrice = "";
-        Parallel.Invoke(
-            () => engBadge = PaddleHelper.DetectText(badgeUp),            // lock(eng)
-            () => ukr      = PaddleHelper.DetectText(badgeUpCyr, cyr: true), // lock(cyr) — паралельно!
-            () => engPrice = PaddleHelper.DetectText(priceUp)             // lock(eng) — чекає eng_badge
-        );
+        // TessOcr з ukr+eng читає і кирилицю і латиницю в одному проході
+        string badge    = TessOcr.DetectText(badgeUp);
+        string engPrice = TessOcr.DetectText(priceUp);
+        string ukr      = badge;
 
         // ── Badge: тоннаж + рівень ────────────────────────────────────────────
-        string eng = engBadge
+        string eng = badge
             .Replace("S", "5").Replace("s", "5").Replace("O", "0").Replace("o", "0")
             .ToUpperInvariant();
 

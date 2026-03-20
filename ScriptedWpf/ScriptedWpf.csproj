@@ -28,13 +28,7 @@
     <PackageReference Include="MahApps.Metro" Version="2.4.10" />
     <PackageReference Include="MaterialDesignThemes" Version="5.1.0" />
     <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
-    <!-- PaddleOCR (Sdcb.PaddleOCR = де-факто стандарт PaddleOCR в .NET) -->
-    <PackageReference Include="Sdcb.PaddleOCR" Version="2.5.0" />
-    <PackageReference Include="Sdcb.PaddleOCR.Models.Online" Version="2.5.0" />
-    <PackageReference Include="Sdcb.PaddleInference" Version="3.0.0" />
-    <PackageReference Include="Sdcb.PaddleInference.runtime.win64.mkl" Version="2.5.1" />
-    <PackageReference Include="OpenCvSharp4" Version="4.8.0.20230708" />
-    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.8.0.20230708" />
+    <PackageReference Include="Tesseract" Version="5.2.0" />
   </ItemGroup>
 
   <ItemGroup>

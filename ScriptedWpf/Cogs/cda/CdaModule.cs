@@ -33,8 +33,7 @@ public sealed class CdaModule : IModule
     public void Initialize(Action<string> log)
     {
         _log = log;
-        // Починаємо завантаження PaddleOCR у фоні одразу при ініціалізації
-        PaddleHelper.EnsureInit(_log);
+        TessOcr.EnsureInit(_log);
     }
 
     public void Start()
@@ -304,7 +303,7 @@ public sealed class CdaModule : IModule
 
             while (_state == BotState.AutoPilot)
             {
-                if (!PaddleHelper.IsReady)
+                if (!TessOcr.IsReady)
                 {
                     _log("[CDA] Очікую завантаження PaddleOCR...");
                     SleepChecked(1000, BotState.AutoPilot);
@@ -591,8 +590,8 @@ public sealed class CdaModule : IModule
         }
 
         // Авто-пошук через PaddleOCR (якщо зону не виділено вручну)
-        if (!PaddleHelper.IsReady) return null;
-        var found = PaddleHelper.FindDialogRegion(_cfg.MonitorIndex);
+        if (!TessOcr.IsReady) return null;
+        var found = TessOcr.FindDialogRegion(_cfg.MonitorIndex);
         if (found == null) return null;
 
         var z = found.Value;
