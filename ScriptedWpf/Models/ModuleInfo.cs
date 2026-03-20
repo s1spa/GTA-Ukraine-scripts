@@ -11,6 +11,8 @@ public class ModuleInfo
     [JsonPropertyName("version")]     public string Version     { get; set; } = "1.0.0";
     [JsonPropertyName("author")]      public string Author      { get; set; } = "";
     [JsonPropertyName("icon")]        public string Icon        { get; set; } = "";
+    [JsonPropertyName("instruction")] public string Instruction { get; set; } = "";
+    [JsonPropertyName("hints")]       public Dictionary<string, string> Hints { get; set; } = new();
     [JsonPropertyName("scripts")]     public List<ScriptInfo> Scripts { get; set; } = new();
 }
 

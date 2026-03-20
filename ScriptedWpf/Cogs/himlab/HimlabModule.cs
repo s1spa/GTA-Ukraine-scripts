@@ -192,9 +192,9 @@ public sealed class HimlabModule : IModule
         var textDim  = (Brush)Application.Current.Resources["TextDimBrush"];
         var borderB  = (Brush)Application.Current.Resources["BorderBrush"];
 
-        var grid = new Grid();
+        var grid = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         int row = 0;
 
@@ -203,12 +203,10 @@ public sealed class HimlabModule : IModule
         var instrBlock = new TextBlock
         {
             Text = "ІНСТРУКЦІЯ\n" +
-                   "1. Відкрий гру та викличи появу капчі (W/A/S/D)\n" +
-                   "2. Для кожної літери натисни «Захопити» — є 3 секунди\n" +
-                   "   щоб перейти в гру поки потрібна літера на екрані\n" +
-                   "3. Скануй усі 4 літери (W, A, S, D)\n" +
-                   "4. F9 — увімкнути / вимкнути\n" +
-                   "   Модуль сам чекає появи капчі та проходить її",
+                   "1. Один раз відскануй всі 4 літери (W, A, S, D) — секція «Шаблони» нижче\n" +
+                   "2. Натисни F9 або кнопку «Увімкнути» — модуль запрацює у фоні\n" +
+                   "3. Коли в грі з'явиться капча — модуль сам її розпізнає і пройде\n" +
+                   "4. F9 повторно — зупинити",
             Foreground = textDim, FontSize = 11,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 12)
@@ -217,19 +215,17 @@ public sealed class HimlabModule : IModule
         grid.Children.Add(instrBlock);
         row++;
 
-        void AddRow(string label, FrameworkElement input)
+        void AddRow(string label, FrameworkElement input, string? hint = null)
         {
-            grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(36) });
-            var lbl = new TextBlock
-            {
-                Text = label, Foreground = textSec,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 12, 0),
-            };
-            Grid.SetRow(lbl, row); Grid.SetColumn(lbl, 0);
+            grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(hint != null ? 46 : 36) });
+            var stack = new StackPanel { Orientation = Orientation.Vertical, VerticalAlignment = VerticalAlignment.Center };
+            stack.Children.Add(new TextBlock { Text = label, Foreground = textSec });
+            if (hint != null)
+                stack.Children.Add(new TextBlock { Text = hint, Foreground = textDim, FontSize = 10 });
+            Grid.SetRow(stack, row); Grid.SetColumn(stack, 0);
             input.VerticalAlignment = VerticalAlignment.Center;
             Grid.SetRow(input, row); Grid.SetColumn(input, 1);
-            grid.Children.Add(lbl); grid.Children.Add(input);
+            grid.Children.Add(stack); grid.Children.Add(input);
             row++;
         }
 
@@ -246,13 +242,15 @@ public sealed class HimlabModule : IModule
         }
         monCb.SelectedIndex = Math.Clamp(_cfg.MonitorIndex + 1, 0, monCb.Items.Count - 1);
         monCb.SelectionChanged += (_, _) => { _cfg.MonitorIndex = monCb.SelectedIndex - 1; _cfg.Save(); };
-        AddRow("Монітор", monCb);
+        AddRow("Монітор", monCb, "На якому моніторі шукати капчу");
 
         // Hold duration
-        AddRow("Тривалість (мс)", IntBox(_cfg.HoldMs, v => { _cfg.HoldMs = v; _cfg.Save(); }));
+        AddRow("Утримання клавіші (мс)", IntBox(_cfg.HoldMs, v => { _cfg.HoldMs = v; _cfg.Save(); }),
+            "Скільки мс тримати клавішу. Збільш якщо капча не спрацьовує (за замовч. 600)");
 
         // Transition delay
-        AddRow("Пауза між буквами (мс)", IntBox(_cfg.TransitionMs, v => { _cfg.TransitionMs = v; _cfg.Save(); }));
+        AddRow("Пауза між кроками (мс)", IntBox(_cfg.TransitionMs, v => { _cfg.TransitionMs = v; _cfg.Save(); }),
+            "Затримка після кожної клавіші — час на анімацію переходу (за замовч. 150)");
 
         var notifCb = new CheckBox
         {
@@ -270,7 +268,7 @@ public sealed class HimlabModule : IModule
 
         var tmplLbl = new TextBlock
         {
-            Text = "ШАБЛОНИ  (F8 = старт)",
+            Text = "ШАБЛОНИ",
             FontSize = 9, FontWeight = FontWeights.Bold,
             Foreground = textDim,
             Margin = new Thickness(0, 4, 0, 8),
@@ -283,7 +281,7 @@ public sealed class HimlabModule : IModule
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var hint = new TextBlock
         {
-            Text = "Відкрий гру, дочекайся потрібної літери\nта натисни «Захопити» — є 3 секунди.",
+            Text = "Активуй капчу в грі, потім скануй кожну літеру окремо: коли на екрані W — натисни [W] Захопити, коли S — [S] Захопити і т.д. Після того як всі 4 літери відскановані — можна запускати.",
             Foreground = textDim, FontSize = 10,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 10),

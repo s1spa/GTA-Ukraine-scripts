@@ -8,6 +8,8 @@ namespace ScriptedWpf.Cogs.Cda;
 
 public class CdaConfig
 {
+    [JsonPropertyName("mode")]              public string Mode              { get; set; } = "Auto";
+    [JsonPropertyName("turbo")]             public bool   Turbo             { get; set; } = true;
     [JsonPropertyName("monitorIndex")]      public int    MonitorIndex      { get; set; } = -1;
     [JsonPropertyName("x")]                 public int    X                 { get; set; }
     [JsonPropertyName("y")]                 public int    Y                 { get; set; }

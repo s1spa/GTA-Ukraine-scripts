@@ -13,7 +13,7 @@ namespace ScriptedWpf.Cogs.Cda;
 
 public sealed class CdaModule : IModule
 {
-    enum BotState { Idle, AutoPilot }
+    enum BotState { Idle, AutoPilot, ManualScan }
 
     volatile BotState _state     = BotState.Idle;
     Action<string>    _log       = Console.WriteLine;
@@ -41,9 +41,19 @@ public sealed class CdaModule : IModule
         if (_state != BotState.Idle) return;
         if (_cfg.X > 0 && _codeZone == null)
             _codeZone = new System.Drawing.Rectangle(_cfg.X, _cfg.Y, _cfg.Width, _cfg.Height);
-        _state = BotState.AutoPilot;
-        new Thread(RunAutoPilot) { IsBackground = true }.Start();
-        Notify("Автопілот", "Запускаю...");
+
+        if (_cfg.Mode == "Manual")
+        {
+            _state = BotState.ManualScan;
+            new Thread(RunManualScan) { IsBackground = true }.Start();
+            Notify("Ручний режим", "Запускаю...");
+        }
+        else
+        {
+            _state = BotState.AutoPilot;
+            new Thread(RunAutoPilot) { IsBackground = true }.Start();
+            Notify("Автопілот", "Запускаю...");
+        }
         StateChanged?.Invoke();
     }
 
@@ -62,21 +72,19 @@ public sealed class CdaModule : IModule
 
     public void RegisterHotkeys(HotkeyService hotkeys)
     {
-        // F7 — автопілот
         hotkeys.Register(0, (uint)System.Windows.Forms.Keys.F7, () =>
         {
-            if (_state == BotState.AutoPilot)
+            if (_state != BotState.Idle)
             {
                 _log("[CDA] F7 → ВИМКНЕНО");
                 Stop();
             }
-            else if (_state == BotState.Idle)
+            else
             {
-                _log("[CDA] F7 → АВТОПІЛОТ");
+                _log($"[CDA] F7 → {(_cfg.Mode == "Manual" ? "РУЧНИЙ РЕЖИМ" : "АВТОПІЛОТ")}");
                 Start();
             }
         });
-
     }
 
     // ── Settings View ─────────────────────────────────────────────────────────
@@ -87,75 +95,88 @@ public sealed class CdaModule : IModule
         var textSec = (Brush)Application.Current.Resources["TextSecondaryBrush"];
         var textDim = (Brush)Application.Current.Resources["TextDimBrush"];
 
-        var grid = new Grid { Margin = new Thickness(0) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var root = new StackPanel { Orientation = Orientation.Vertical };
 
-        int row = 0;
-
-        // ── Інструкція ────────────────────────────────────────────────────────
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        var instrBlock = new TextBlock
+        // ── Вибір режиму ──────────────────────────────────────────────────────
+        var modeLbl = new TextBlock
         {
-            Text = "ІНСТРУКЦІЯ\n" +
-                   "• F7 — вмикає / вимикає автопілот\n" +
-                   "• Автопілот сам шукає найкраще замовлення, клікає та вводить код\n" +
-                   "• При першому запуску завантажується PaddleOCR (~50 MB, кешується)",
+            Text = "РЕЖИМ", Foreground = textDim, FontSize = 10,
+            FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 6),
+        };
+        var modeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 16) };
+        var rbManual = new RadioButton { Content = "Ввід коду (ручний)",    IsChecked = _cfg.Mode == "Manual", Foreground = textSec, Margin = new Thickness(0, 0, 20, 0) };
+        var rbAuto   = new RadioButton { Content = "Повністю автоматичний", IsChecked = _cfg.Mode != "Manual", Foreground = textSec };
+        modeRow.Children.Add(rbManual);
+        modeRow.Children.Add(rbAuto);
+        root.Children.Add(modeLbl);
+        root.Children.Add(modeRow);
+
+        // ── Панель ручного режиму ─────────────────────────────────────────────
+        var manualPanel = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            Visibility  = _cfg.Mode == "Manual" ? Visibility.Visible : Visibility.Collapsed,
+        };
+
+        manualPanel.Children.Add(new TextBlock
+        {
+            Text         = "Виділіть область екрану де з'являється код — програма буде автоматично його зчитувати і вводити.",
             Foreground   = textDim,
             FontSize     = 11,
             TextWrapping = TextWrapping.Wrap,
-            Margin       = new Thickness(0, 0, 0, 12),
-        };
-        Grid.SetRow(instrBlock, row); Grid.SetColumnSpan(instrBlock, 2);
-        grid.Children.Add(instrBlock);
-        row++;
-
-        void AddRow(string label, FrameworkElement input)
-        {
-            grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(36) });
-            var lbl = new TextBlock { Text = label, Foreground = textSec, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
-            input.VerticalAlignment = VerticalAlignment.Center;
-            Grid.SetRow(lbl, row);   Grid.SetColumn(lbl, 0);
-            Grid.SetRow(input, row); Grid.SetColumn(input, 1);
-            grid.Children.Add(lbl);
-            grid.Children.Add(input);
-            row++;
-        }
-
-        // Зона коду
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        var zonePanel = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 0, 0, 8) };
-
-        var zoneLbl = new TextBlock { Foreground = textDim, FontSize = 11, Margin = new Thickness(0, 0, 0, 4) };
-        void RefreshZoneLabel()
-        {
-            zoneLbl.Text = (_cfg.X > 0 && _cfg.Width > 0)
-                ? $"Зона коду: ({_cfg.X}, {_cfg.Y}) → ({_cfg.X + _cfg.Width}, {_cfg.Y + _cfg.Height})"
-                : "Зона коду: не задана";
-        }
-        RefreshZoneLabel();
-
-        var zoneBtn = new Button
-        {
-            Content             = "Виділити зону коду",
-            Padding             = new Thickness(12, 5, 12, 5),
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Cursor              = Cursors.Hand,
-        };
-        zoneBtn.Click += (_, _) => OpenZoneSelector(zone =>
-        {
-            _codeZone   = zone;
-            _cfg.X      = zone.X; _cfg.Y = zone.Y;
-            _cfg.Width  = zone.Width; _cfg.Height = zone.Height;
-            _cfg.Save();
-            Application.Current.Dispatcher.Invoke(RefreshZoneLabel);
+            Margin       = new Thickness(0, 0, 0, 8),
         });
 
-        zonePanel.Children.Add(zoneLbl);
-        zonePanel.Children.Add(zoneBtn);
-        Grid.SetRow(zonePanel, row); Grid.SetColumnSpan(zonePanel, 2);
-        grid.Children.Add(zonePanel);
-        row++;
+        var mZoneLbl = new TextBlock { Foreground = textDim, FontSize = 11, Margin = new Thickness(0, 0, 0, 4) };
+        void RefreshManualZone() =>
+            mZoneLbl.Text = (_cfg.X > 0 && _cfg.Width > 0)
+                ? $"Зона коду: ({_cfg.X}, {_cfg.Y}) → ({_cfg.X + _cfg.Width}, {_cfg.Y + _cfg.Height})"
+                : "Зона коду: не задана";
+        RefreshManualZone();
+
+        var mZoneBtn = new Button
+        {
+            Content = "Виділити зону коду", Padding = new Thickness(12, 5, 12, 5),
+            HorizontalAlignment = HorizontalAlignment.Left, Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 0, 10),
+        };
+        mZoneBtn.Click += (_, _) => OpenZoneSelector(z =>
+        {
+            _codeZone = z; _cfg.X = z.X; _cfg.Y = z.Y; _cfg.Width = z.Width; _cfg.Height = z.Height; _cfg.Save();
+            Application.Current.Dispatcher.Invoke(RefreshManualZone);
+        });
+
+        var turboCb = new CheckBox { Content = "Turbo-режим (без затримок між цифрами)", IsChecked = _cfg.Turbo, Foreground = textSec, Margin = new Thickness(0, 0, 0, 6) };
+        turboCb.Checked   += (_, _) => { _cfg.Turbo = true;  _cfg.Save(); };
+        turboCb.Unchecked += (_, _) => { _cfg.Turbo = false; _cfg.Save(); };
+
+        var mNotifCb = new CheckBox { Content = "Показувати сповіщення", IsChecked = _cfg.ShowNotifications, Foreground = textSec };
+        mNotifCb.Checked   += (_, _) => { _cfg.ShowNotifications = true;  _cfg.Save(); };
+        mNotifCb.Unchecked += (_, _) => { _cfg.ShowNotifications = false; _cfg.Save(); };
+
+        manualPanel.Children.Add(mZoneLbl);
+        manualPanel.Children.Add(mZoneBtn);
+        manualPanel.Children.Add(turboCb);
+        manualPanel.Children.Add(mNotifCb);
+        root.Children.Add(manualPanel);
+
+        // ── Панель автоматичного режиму ───────────────────────────────────────
+        var autoPanel = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            Visibility  = _cfg.Mode != "Manual" ? Visibility.Visible : Visibility.Collapsed,
+        };
+
+        Grid LabelRow(string label, FrameworkElement ctrl)
+        {
+            var g = new Grid { Margin = new Thickness(0, 0, 0, 8) };
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var lbl = new TextBlock { Text = label, Foreground = textSec, VerticalAlignment = VerticalAlignment.Center };
+            ctrl.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(lbl, 0); Grid.SetColumn(ctrl, 1);
+            g.Children.Add(lbl); g.Children.Add(ctrl);
+            return g;
+        }
 
         // Монітор
         var monCb = new ComboBox { Width = 220, Height = 28 };
@@ -173,76 +194,100 @@ public sealed class CdaModule : IModule
         {
             _cfg.MonitorIndex = monCb.SelectedIndex - 1;
             _cfg.X = _cfg.Y = _cfg.Width = _cfg.Height = 0;
-            _codeZone = null;
-            _cfg.Save();
+            _codeZone = null; _cfg.Save();
         };
-        AddRow("Монітор", monCb);
+        autoPanel.Children.Add(LabelRow("Монітор:", monCb));
 
         // Мін. ціна
-        AddRow("Мін. ціна /km", IntBox(_cfg.MinPrice, v => { _cfg.MinPrice = v; _cfg.Save(); }));
+        var priceRow = new StackPanel { Orientation = Orientation.Horizontal };
+        var priceTb  = new TextBox { Text = _cfg.MinPrice.ToString(), Width = 90, Height = 26, VerticalAlignment = VerticalAlignment.Center };
+        priceTb.LostFocus += (_, _) =>
+        {
+            if (int.TryParse(priceTb.Text, out int v)) { _cfg.MinPrice = v; _cfg.Save(); }
+            else priceTb.Text = _cfg.MinPrice.ToString();
+        };
+        priceRow.Children.Add(priceTb);
+        priceRow.Children.Add(new TextBlock { Text = " $", Foreground = textDim, VerticalAlignment = VerticalAlignment.Center });
+        autoPanel.Children.Add(LabelRow("Мін. ціна /km:", priceRow));
 
         // Макс. тоннаж
-        var tonCb = new ComboBox { Width = 100, Height = 28 };
+        var tonCb = new ComboBox { Width = 120, Height = 28 };
         double[] tonOpts = { 0.5, 1.5, 3.0, 5.0 };
-        foreach (var t in tonOpts) tonCb.Items.Add($"{t:F1} т");
+        foreach (var t in tonOpts) tonCb.Items.Add(t < 5.0 ? $"{t:F1} т" : $"{(int)t} т (всі)");
         int tonIdx = Array.FindIndex(tonOpts, t => Math.Abs(t - _cfg.MaxTon) < 0.01);
         tonCb.SelectedIndex = tonIdx >= 0 ? tonIdx : tonOpts.Length - 1;
         tonCb.SelectionChanged += (_, _) =>
         {
             if (tonCb.SelectedIndex >= 0) { _cfg.MaxTon = tonOpts[tonCb.SelectedIndex]; _cfg.Save(); }
         };
-        AddRow("Макс. тонн", tonCb);
-
-        // Сповіщення
-        var notifCb = new CheckBox { Content = "Показувати сповіщення", IsChecked = _cfg.ShowNotifications, Foreground = textSec };
-        notifCb.Checked   += (_, _) => { _cfg.ShowNotifications = true;  _cfg.Save(); };
-        notifCb.Unchecked += (_, _) => { _cfg.ShowNotifications = false; _cfg.Save(); };
-        AddRow("Сповіщення", notifCb);
+        autoPanel.Children.Add(LabelRow("Макс. тоннаж:", tonCb));
 
         // Типи вантажів
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(16) }); row++;
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        var typesLbl = new TextBlock
-        {
-            Text = "Типи вантажів", Foreground = textDim, FontSize = 10,
-            FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 4, 0, 4),
-        };
-        Grid.SetRow(typesLbl, row); Grid.SetColumnSpan(typesLbl, 2);
-        grid.Children.Add(typesLbl);
-        row++;
-
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        var wrap = new WrapPanel { Orientation = Orientation.Horizontal };
-        string[] allTypes = { "Одяг", "Нафта", "Фармацевтика", "Різне", "Продукти", "Автозапчастини", "Інше" };
+        autoPanel.Children.Add(new TextBlock { Text = "Типи вантажів:", Foreground = textSec, Margin = new Thickness(0, 4, 0, 4) });
+        var wrap = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 12) };
+        string[] allTypes = { "Фармацевтика", "Одяг", "Продукти", "Різне", "Інше", "Автозапчастини", "Нафта" };
         foreach (var t in allTypes)
         {
-            string captured = t;
-            var cb = new CheckBox
-            {
-                Content   = t,
-                IsChecked = _cfg.Types.Contains(t),
-                Foreground = textSec,
-                Margin    = new Thickness(0, 2, 16, 2),
-            };
-            cb.Checked   += (_, _) => { if (!_cfg.Types.Contains(captured)) { _cfg.Types.Add(captured); _cfg.Save(); } };
-            cb.Unchecked += (_, _) => { _cfg.Types.Remove(captured); _cfg.Save(); };
+            string cap = t;
+            var cb = new CheckBox { Content = t, IsChecked = _cfg.Types.Contains(t), Foreground = textSec, Margin = new Thickness(0, 2, 12, 2) };
+            cb.Checked   += (_, _) => { if (!_cfg.Types.Contains(cap)) { _cfg.Types.Add(cap); _cfg.Save(); } };
+            cb.Unchecked += (_, _) => { _cfg.Types.Remove(cap); _cfg.Save(); };
             wrap.Children.Add(cb);
         }
-        Grid.SetRow(wrap, row); Grid.SetColumnSpan(wrap, 2);
-        grid.Children.Add(wrap);
+        autoPanel.Children.Add(wrap);
 
-        return grid;
-    }
-
-    static TextBox IntBox(int initial, Action<int> onChange)
-    {
-        var tb = new TextBox { Text = initial.ToString(), Width = 90, Height = 26 };
-        tb.LostFocus += (_, _) =>
+        // Зона коду (резервна)
+        autoPanel.Children.Add(new TextBlock
         {
-            if (int.TryParse(tb.Text, out int v)) onChange(v);
-            else tb.Text = initial.ToString();
+            Text         = "Зона коду визначається автоматично. Якщо авто-пошук не спрацьовує — виділіть зону вручну як резервну.",
+            Foreground   = textDim,
+            FontSize     = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 8, 0, 8),
+        });
+
+        var aZoneLbl = new TextBlock { Foreground = textDim, FontSize = 11, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 4) };
+        void RefreshAutoZone() =>
+            aZoneLbl.Text = (_cfg.X > 0 && _cfg.Width > 0)
+                ? $"Зона коду: ({_cfg.X}, {_cfg.Y}) → ({_cfg.X + _cfg.Width}, {_cfg.Y + _cfg.Height})"
+                : "Зона коду визначається автоматично. Вкажіть резервну зону якщо авто-пошук не спрацює.";
+        RefreshAutoZone();
+
+        var aZoneBtn = new Button
+        {
+            Content = "Виділити зону коду (резервна)", Padding = new Thickness(12, 5, 12, 5),
+            HorizontalAlignment = HorizontalAlignment.Left, Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 0, 12),
         };
-        return tb;
+        aZoneBtn.Click += (_, _) => OpenZoneSelector(z =>
+        {
+            _codeZone = z; _cfg.X = z.X; _cfg.Y = z.Y; _cfg.Width = z.Width; _cfg.Height = z.Height; _cfg.Save();
+            Application.Current.Dispatcher.Invoke(RefreshAutoZone);
+        });
+
+        var aNotifCb = new CheckBox { Content = "Показувати сповіщення", IsChecked = _cfg.ShowNotifications, Foreground = textSec };
+        aNotifCb.Checked   += (_, _) => { _cfg.ShowNotifications = true;  _cfg.Save(); };
+        aNotifCb.Unchecked += (_, _) => { _cfg.ShowNotifications = false; _cfg.Save(); };
+
+        autoPanel.Children.Add(aZoneLbl);
+        autoPanel.Children.Add(aZoneBtn);
+        autoPanel.Children.Add(aNotifCb);
+        root.Children.Add(autoPanel);
+
+        // ── Перемикання режиму ────────────────────────────────────────────────
+        rbManual.Checked += (_, _) =>
+        {
+            _cfg.Mode = "Manual"; _cfg.Save();
+            manualPanel.Visibility = Visibility.Visible;
+            autoPanel.Visibility   = Visibility.Collapsed;
+        };
+        rbAuto.Checked += (_, _) =>
+        {
+            _cfg.Mode = "Auto"; _cfg.Save();
+            manualPanel.Visibility = Visibility.Collapsed;
+            autoPanel.Visibility   = Visibility.Visible;
+        };
+
+        return root;
     }
 
     // ── Autopilot loop ────────────────────────────────────────────────────────
@@ -351,6 +396,65 @@ public sealed class CdaModule : IModule
             }
 
             _log("[CDA] Автопілот зупинено.");
+            _state = BotState.Idle;
+            StateChanged?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            _log($"[CDA] ❌ {ex.Message}");
+            _state = BotState.Idle;
+            StateChanged?.Invoke();
+        }
+    }
+
+    // ── Manual Scan loop ──────────────────────────────────────────────────────
+    void RunManualScan()
+    {
+        try
+        {
+            _log("[CDA] РУЧНИЙ РЕЖИМ | Сканую зону коду...");
+            string? lastCode       = null;
+            long    cooldownUntil  = 0;
+            int     noCodeStreak   = 0;
+
+            while (_state == BotState.ManualScan)
+            {
+                if (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() < cooldownUntil)
+                { Thread.Sleep(50); continue; }
+
+                var zone = GetOrFindCodeZone();
+                if (zone == null)
+                {
+                    _log("[CDA] Зона не задана. Виділіть зону коду в налаштуваннях.");
+                    SleepChecked(1000, BotState.ManualScan);
+                    continue;
+                }
+
+                using var img = ScreenCapture.Capture(zone.Value);
+                var (code, rawText) = WinOcr.FindCodeAsync(img).GetAwaiter().GetResult();
+
+                if (code != null)
+                {
+                    noCodeStreak = 0;
+                    if (code != lastCode)
+                    {
+                        _log($"[CDA] Код: {code} — вводжу...");
+                        Thread.Sleep(100);
+                        KeyInput.TypeCode(code, _cfg.Turbo);
+                        _log("[CDA] Готово!");
+                        lastCode      = code;
+                        cooldownUntil = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 2000;
+                        Notify("Код введено", code);
+                    }
+                }
+                else
+                {
+                    if (++noCodeStreak >= 5) { lastCode = null; noCodeStreak = 0; }
+                    Thread.Sleep(60);
+                }
+            }
+
+            _log("[CDA] Ручний режим зупинено.");
             _state = BotState.Idle;
             StateChanged?.Invoke();
         }

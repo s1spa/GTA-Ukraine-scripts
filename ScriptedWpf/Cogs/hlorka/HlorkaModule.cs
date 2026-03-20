@@ -1,12 +1,16 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using WpfBrush = System.Windows.Media.Brush;
 using ScriptedWpf.Core;
+using ScriptedWpf.Models;
 using ScriptedWpf.Cogs.Cda; // ScreenCapture
 
 namespace ScriptedWpf.Cogs.Hlorka;
@@ -210,8 +214,22 @@ public sealed class HlorkaModule : IModule
 
     // ── Панель налаштувань ────────────────────────────────────────────────────
 
+    static ModuleInfo LoadModuleInfo()
+    {
+        try
+        {
+            var path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Cogs", "hlorka", "module.json");
+            var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            return JsonSerializer.Deserialize<ModuleInfo>(File.ReadAllText(path), opts) ?? new();
+        }
+        catch { return new(); }
+    }
+
     FrameworkElement BuildSettingsPanel()
     {
+        var info    = LoadModuleInfo();
+        string H(string key) => info.Hints.TryGetValue(key, out var v) ? v : "";
+
         var textSec = (WpfBrush)Application.Current.Resources["TextSecondaryBrush"];
         var textDim = (WpfBrush)Application.Current.Resources["TextDimBrush"];
         var stack   = new StackPanel { Orientation = Orientation.Vertical };
@@ -225,14 +243,10 @@ public sealed class HlorkaModule : IModule
         });
         stack.Children.Add(new TextBlock
         {
-            Text = "1. Виділи зону — обведи планку міні-гри на екрані\n" +
-                   "2. Збережи приклад — поки міні-гра активна на екрані\n" +
-                   "3. F10 — увімкнути / вимкнути\n" +
-                   "4. Якщо часто хибно спрацьовує — зменш поріг MAD\n" +
-                   "   (дивись значення в терміналі при очікуванні)",
-            Foreground = textDim, FontSize = 11,
+            Text         = info.Instruction,
+            Foreground   = textDim, FontSize = 13,
             TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 12)
+            Margin       = new Thickness(0, 0, 0, 12)
         });
 
         // ── Монітор ──────────────────────────────────────────────────────────
@@ -289,7 +303,7 @@ public sealed class HlorkaModule : IModule
         var saveTemplateBtn = new Button
         {
             Content = "Зберегти приклад (3 с)",
-            Height = 34,
+            Height = 34, Margin = new Thickness(0, 14, 0, 0),
             HorizontalAlignment = HorizontalAlignment.Left,
             Padding = new Thickness(16, 0, 16, 0),
             ToolTip = "Відкрий міні-гру в грі, натисни — через 3 с збережеться скріншот зони як еталон"
@@ -300,8 +314,6 @@ public sealed class HlorkaModule : IModule
             Margin = new Thickness(0, 4, 0, 0),
             Visibility = Visibility.Collapsed
         };
-        stack.Children.Add(saveTemplateBtn);
-        stack.Children.Add(templateLbl);
 
         saveTemplateBtn.Click += (_, _) =>
         {
@@ -365,7 +377,26 @@ public sealed class HlorkaModule : IModule
             Visibility = Visibility.Collapsed
         };
         stack.Children.Add(calibBtn);
+        stack.Children.Add(new TextBlock
+        {
+            Text         = H("calibBtn"),
+            Foreground   = textDim,
+            FontSize     = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 5, 0, 0),
+        });
         stack.Children.Add(calibLbl);
+
+        stack.Children.Add(saveTemplateBtn);
+        stack.Children.Add(new TextBlock
+        {
+            Text         = H("saveBtn"),
+            Foreground   = textDim,
+            FontSize     = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 5, 0, 0),
+        });
+        stack.Children.Add(templateLbl);
 
         calibBtn.Click += (_, _) =>
         {
@@ -423,7 +454,6 @@ public sealed class HlorkaModule : IModule
             Text = "Мертва зона (px):",
             Foreground = textSec, Margin = new Thickness(0, 10, 0, 4)
         });
-
         var deadbandBox = new TextBox
         {
             Width = 60, Height = 26,
@@ -439,12 +469,20 @@ public sealed class HlorkaModule : IModule
             }
         };
         stack.Children.Add(deadbandBox);
-
-        // ── Поріг схожості з еталоном ────────────────────────────────────────
         stack.Children.Add(new TextBlock
         {
-            Text = "Поріг MAD (менше = суворіше):",
-            Foreground = textSec, Margin = new Thickness(0, 8, 0, 4)
+            Text         = H("deadband"),
+            Foreground   = textDim,
+            FontSize     = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 4, 0, 0),
+        });
+
+        // ── Поріг MAD ────────────────────────────────────────────────────────
+        stack.Children.Add(new TextBlock
+        {
+            Text = "Поріг MAD:",
+            Foreground = textSec, Margin = new Thickness(0, 10, 0, 4)
         });
         var threshBox = new TextBox
         {
@@ -463,9 +501,11 @@ public sealed class HlorkaModule : IModule
         stack.Children.Add(threshBox);
         stack.Children.Add(new TextBlock
         {
-            Text = "← Дивись MAD в терміналі і виставь між\n   «без міні-гри» та «з міні-грою»",
-            Foreground = textSec, FontSize = 11,
-            Margin = new Thickness(0, 2, 0, 0)
+            Text         = H("mad"),
+            Foreground   = textDim,
+            FontSize     = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 4, 0, 0),
         });
 
         var notifCb = new CheckBox
