@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Globalization;
-using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
@@ -93,17 +92,24 @@ static class WinOcr
             ?? OcrEngine.TryCreateFromLanguage(new Windows.Globalization.Language("en-US"))!;
     }
 
-    static async Task<SoftwareBitmap> ToSoftwareBitmapAsync(SysBitmap bmp)
+    // Пряма копія пікселів — без PNG encode/decode (~5-10x швидше)
+    static SoftwareBitmap ToSoftwareBitmap(SysBitmap bmp)
     {
-        using var ms  = new MemoryStream();
-        bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
-        ms.Position = 0;
-        using var ras = new InMemoryRandomAccessStream();
-        using var dw  = new DataWriter(ras.GetOutputStreamAt(0));
-        dw.WriteBytes(ms.ToArray());
-        await dw.StoreAsync();
-        var decoder = await BitmapDecoder.CreateAsync(ras);
-        return await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
+        var bd = bmp.LockBits(new SysRect(0, 0, bmp.Width, bmp.Height),
+                     ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            int bytes = Math.Abs(bd.Stride) * bmp.Height;
+            byte[] pixels = new byte[bytes];
+            Marshal.Copy(bd.Scan0, pixels, 0, bytes);
+            using var dw = new DataWriter();
+            dw.WriteBytes(pixels);
+            return SoftwareBitmap.CreateCopyFromBuffer(
+                dw.DetachBuffer(),
+                BitmapPixelFormat.Bgra8, bmp.Width, bmp.Height,
+                BitmapAlphaMode.Premultiplied);
+        }
+        finally { bmp.UnlockBits(bd); }
     }
 
     static SysBitmap Upscale(SysBitmap src, int scale)
@@ -119,7 +125,7 @@ static class WinOcr
     {
         using var processed = ScreenCapture.Preprocess(img);
         using var upscaled  = Upscale(processed, 3);
-        using var soft      = await ToSoftwareBitmapAsync(upscaled);
+        using var soft      = ToSoftwareBitmap(upscaled);
         var result = await Engine.RecognizeAsync(soft);
         string raw = result.Text.Trim();
         var spaced = Regex.Match(raw, @"(\d)\s*(\d)\s*(\d)\s*(\d)\s*(\d)\s*(\d)");
@@ -225,14 +231,15 @@ static class PaddleHelper
     {
         var data = bmp.LockBits(new SysRect(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
         var rects = new List<SysRect>();
-        var visited = new bool[bmp.Width, bmp.Height];
+        // flat bool[] — краща локальність кешу ніж bool[,]
+        var visited = new bool[bmp.Width * bmp.Height];
         byte* scan0 = (byte*)data.Scan0;
 
         for (int y = 0; y < bmp.Height; y++)
         {
             for (int x = 0; x < bmp.Width; x++)
             {
-                if (visited[x, y]) continue;
+                if (visited[y * bmp.Width + x]) continue;
                 byte* p = scan0 + y * data.Stride + x * 4;
                 // Look for dark, semi-transparent pixels (typical for dialogs/overlays)
                 if (p[3] > 100 && p[0] < 50 && p[1] < 50 && p[2] < 50)
@@ -251,16 +258,17 @@ static class PaddleHelper
         return rects.OrderByDescending(r => r.Width * r.Height).First();
     }
     
-    static unsafe SysRect FloodFill(byte* scan0, int stride, bool[,] visited, int startX, int startY, int w, int h)
+    static unsafe SysRect FloodFill(byte* scan0, int stride, bool[] visited, int startX, int startY, int w, int h)
     {
-        var q = new Queue<SysPoint>();
-        q.Enqueue(new SysPoint(startX, startY));
-        visited[startX, startY] = true;
+        // Stack замість Queue: краща продуктивність (менше алокацій, DFS замість BFS)
+        var stack = new Stack<SysPoint>();
+        stack.Push(new SysPoint(startX, startY));
+        visited[startY * w + startX] = true;
         int minX = startX, maxX = startX, minY = startY, maxY = startY;
 
-        while (q.Count > 0)
+        while (stack.Count > 0)
         {
-            var p = q.Dequeue();
+            var p = stack.Pop();
             minX = Math.Min(minX, p.X); maxX = Math.Max(maxX, p.X);
             minY = Math.Min(minY, p.Y); maxY = Math.Max(maxY, p.Y);
 
@@ -270,13 +278,13 @@ static class PaddleHelper
                 {
                     if (i == 0 && j == 0) continue;
                     int nx = p.X + i, ny = p.Y + j;
-                    if (nx >= 0 && nx < w && ny >= 0 && ny < h && !visited[nx, ny])
+                    if (nx >= 0 && nx < w && ny >= 0 && ny < h && !visited[ny * w + nx])
                     {
                         byte* ptr = scan0 + ny * stride + nx * 4;
                         if (ptr[3] > 100 && ptr[0] < 50 && ptr[1] < 50 && ptr[2] < 50)
                         {
-                            visited[nx, ny] = true;
-                            q.Enqueue(new SysPoint(nx, ny));
+                            visited[ny * w + nx] = true;
+                            stack.Push(new SysPoint(nx, ny));
                         }
                     }
                 }
@@ -343,10 +351,7 @@ static class OrderScanner
         {
             if (isCancelled?.Invoke() == true) break;
 
-            int price = ReadPrice(bmp, anchor);
-            if (isCancelled?.Invoke() == true) break;
-
-            var (tonnage, level, orderType) = ReadBadge(bmp, anchor);
+            var (price, tonnage, level, orderType) = ReadCard(bmp, anchor);
 
             // Кнопка "Натисніть, щоб переглянути" = anchor + ~130px вправо + ~50px вниз
             int btnX = screen.X + anchor.X + 130;
@@ -373,56 +378,53 @@ static class OrderScanner
         return dst;
     }
 
-    // Anchor = перший зелений піксель основної ціни ($XX XXX)
-    // per-km ціна (≈ $X/km.) знаходиться на ~25px нижче anchor
-    static int ReadPrice(SysBitmap bmp, SysPoint anchor)
+    // Оригінальні зони (badge окремо від price) + 3 OCR паралельно
+    // eng_badge || cyr_badge → справжній паралелізм (різні lock-об'єкти)
+    // eng_price конкурує з eng_badge за lock(eng), але cyr вже йде паралельно
+    // Результат: 3T послідовно → ~2T з overlap = ~33% швидше на картку
+    static (int price, double ton, int lvl, string type) ReadCard(SysBitmap bmp, SysPoint anchor)
     {
         int x0 = Math.Max(0, anchor.X - 10);
-        int y0 = anchor.Y + 25;
-        if (y0 + 50 > bmp.Height) return 0;
-        var r = new SysRect(x0, y0, Math.Min(280, bmp.Width - x0), 50);
-        if (r.Width < 30) return 0;
 
-        using var crop = bmp.Clone(r, bmp.PixelFormat);
-        using var up   = Upscale(crop, 3);
+        // Badge zone — оригінальні межі ReadBadge
+        int by0 = Math.Max(0, anchor.Y - 100);
+        var br  = new SysRect(x0, by0, Math.Min(380, bmp.Width - x0), 85);
 
-        string txt = PaddleHelper.DetectText(up)
-            .Replace(" ", "").Replace("O", "0").Replace("S", "5").Replace("s", "5");
+        // Price zone — оригінальні межі ReadPrice
+        int py0 = anchor.Y + 25;
+        var pr  = new SysRect(x0, py0, Math.Min(280, bmp.Width - x0), 50);
 
-        // Шукаємо цифри після знаку $
-        int di = txt.IndexOf('$');
-        if (di >= 0 && di < txt.Length - 1) txt = txt[(di + 1)..];
-        var m = Regex.Match(txt, @"\d+");
-        return m.Success && int.TryParse(m.Value, out int p) ? p : 0;
-    }
+        if (br.Width < 50 || py0 + 50 > bmp.Height || pr.Width < 30)
+            return (0, 0, 1, "Невідомо");
 
-    // Badges ([1.5 T] [1 LVL] [Нафта]) знаходяться вище anchor
-    static (double ton, int lvl, string type) ReadBadge(SysBitmap bmp, SysPoint anchor)
-    {
-        // Anchor = основна ціна. Badges = приблизно на 55-90px вище
-        int x0 = Math.Max(0, anchor.X - 10);
-        int y0 = Math.Max(0, anchor.Y - 100);
-        var r  = new SysRect(x0, y0, Math.Min(380, bmp.Width - x0), 85);
-        if (r.Width < 50) return (0, 1, "Невідомо");
+        // Готуємо окремі bitmap-и для кожного потоку (Bitmap не thread-safe)
+        using var badgeCrop = bmp.Clone(br, bmp.PixelFormat);
+        using var badgeUp   = Upscale(badgeCrop, 3);
+        using var badgeUpCyr = (SysBitmap)badgeUp.Clone(); // окремий для cyr-потоку
 
-        using var crop = bmp.Clone(r, bmp.PixelFormat);
-        using var up   = Upscale(crop, 3);
+        using var priceCrop = bmp.Clone(pr, bmp.PixelFormat);
+        using var priceUp   = Upscale(priceCrop, 3);
 
-        // Англійський движок: тоннаж ("1.5 T") + рівень ("1 LVL")
-        string eng = PaddleHelper.DetectText(up)
+        string engBadge = "", ukr = "", engPrice = "";
+        Parallel.Invoke(
+            () => engBadge = PaddleHelper.DetectText(badgeUp),            // lock(eng)
+            () => ukr      = PaddleHelper.DetectText(badgeUpCyr, cyr: true), // lock(cyr) — паралельно!
+            () => engPrice = PaddleHelper.DetectText(priceUp)             // lock(eng) — чекає eng_badge
+        );
+
+        // ── Badge: тоннаж + рівень ────────────────────────────────────────────
+        string eng = engBadge
             .Replace("S", "5").Replace("s", "5").Replace("O", "0").Replace("o", "0")
             .ToUpperInvariant();
 
         double ton = 0;
         int    lvl = 1;
 
-        // [TТ] — Latin T або Cyrillic Т (PaddleOCR може повернути будь-яке)
         var tm = Regex.Match(eng, @"(\d+[.,]?\d*)\s*[TТ]");
         if (tm.Success)
         {
             string raw = tm.Groups[1].Value.Replace(',', '.');
             double.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out ton);
-            // OCR міг загубити крапку: "15"→"1.5", "05"→"0.5"
             if (!ValidTons.Contains(ton) && raw.Length >= 2)
             {
                 string cand = raw[..^1] + "." + raw[^1..];
@@ -435,9 +437,17 @@ static class OrderScanner
         var lm = Regex.Match(eng, @"(\d+)\s*LVL", RegexOptions.IgnoreCase);
         if (lm.Success) int.TryParse(lm.Groups[1].Value, out lvl);
 
-        // Кириличний движок: тип вантажу
-        string ukr = PaddleHelper.DetectText(up, cyr: true).ToLowerInvariant();
+        // ── Price: ціна/km ────────────────────────────────────────────────────
+        int price = 0;
+        string priceTxt = engPrice
+            .Replace(" ", "").Replace("O", "0").Replace("S", "5").Replace("s", "5");
+        int di = priceTxt.IndexOf('$');
+        if (di >= 0 && di < priceTxt.Length - 1) priceTxt = priceTxt[(di + 1)..];
+        var pm = Regex.Match(priceTxt, @"\d+");
+        if (pm.Success) int.TryParse(pm.Value, out price);
 
+        // ── Cyrillic: тип вантажу ─────────────────────────────────────────────
+        ukr = ukr.ToLowerInvariant();
         string type =
             ukr.Contains("одяг")    || ukr.Contains("модн")                                       ? "Одяг"          :
             ukr.Contains("продукт") || ukr.Contains("харч")                                       ? "Продукти"      :
@@ -448,7 +458,7 @@ static class OrderScanner
             ukr.Contains("інш")     || ukr.Contains("спорядж") || ukr.Contains("тактичн")         ? "Інше"          :
             "Невідомо";
 
-        return (ton, lvl, type);
+        return (price, ton, lvl, type);
     }
 
     // Колір основної ціни ($XX XXX) — yellow-green (222,237,131) area
@@ -468,9 +478,14 @@ static class OrderScanner
                     int b = row[x * 4], g = row[x * 4 + 1], r = row[x * 4 + 2];
                     if (r >= 205 && r <= 240 && g >= 220 && g <= 250 && b >= 115 && b <= 148)
                     {
+                        // Зворотна ітерація + early break по Y (анкори відсортовані зверху-вниз)
                         bool isNew = true;
-                        foreach (var p in anchors)
-                            if (Math.Abs(p.X - x) < 200 && Math.Abs(p.Y - y) < 150) { isNew = false; break; }
+                        for (int ai = anchors.Count - 1; ai >= 0; ai--)
+                        {
+                            var ap = anchors[ai];
+                            if (y - ap.Y > 150) break; // всі попередні ще далі по Y
+                            if (Math.Abs(ap.X - x) < 200) { isNew = false; break; }
+                        }
                         if (isNew) anchors.Add(new SysPoint(x, y));
                     }
                 }
