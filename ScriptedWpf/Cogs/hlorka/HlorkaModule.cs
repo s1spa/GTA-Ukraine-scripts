@@ -381,7 +381,7 @@ public sealed class HlorkaModule : IModule
         {
             Text         = H("calibBtn"),
             Foreground   = textDim,
-            FontSize     = 12,
+            FontSize     = 13,
             TextWrapping = TextWrapping.Wrap,
             Margin       = new Thickness(0, 5, 0, 0),
         });
@@ -392,7 +392,7 @@ public sealed class HlorkaModule : IModule
         {
             Text         = H("saveBtn"),
             Foreground   = textDim,
-            FontSize     = 12,
+            FontSize     = 13,
             TextWrapping = TextWrapping.Wrap,
             Margin       = new Thickness(0, 5, 0, 0),
         });
@@ -473,7 +473,7 @@ public sealed class HlorkaModule : IModule
         {
             Text         = H("deadband"),
             Foreground   = textDim,
-            FontSize     = 12,
+            FontSize     = 13,
             TextWrapping = TextWrapping.Wrap,
             Margin       = new Thickness(0, 4, 0, 0),
         });
@@ -503,7 +503,7 @@ public sealed class HlorkaModule : IModule
         {
             Text         = H("mad"),
             Foreground   = textDim,
-            FontSize     = 12,
+            FontSize     = 13,
             TextWrapping = TextWrapping.Wrap,
             Margin       = new Thickness(0, 4, 0, 0),
         });

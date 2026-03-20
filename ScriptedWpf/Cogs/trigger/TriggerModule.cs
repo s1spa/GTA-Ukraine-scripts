@@ -11,6 +11,7 @@ using WpfColor = System.Windows.Media.Color;
 using WpfSCB   = System.Windows.Media.SolidColorBrush;
 using WpfBrush = System.Windows.Media.Brush;
 using ScriptedWpf.Core;
+using ScriptedWpf.Models;
 
 namespace ScriptedWpf.Cogs.Trigger;
 
@@ -58,21 +59,15 @@ public sealed class TriggerModule : IModule
         var bgCard  = (WpfBrush)Application.Current.Resources["BgCardBrush"];
         var borderB = (WpfBrush)Application.Current.Resources["BorderBrush"];
 
+        var info  = ModuleInfo.Load("trigger");
         var panel = new StackPanel();
 
         // ── Instructions ──────────────────────────────────────────────────────
         var instr = new TextBlock
         {
-            Text = "Auto Trigger — самостійний модуль автоматизації.\n\n" +
-                   "Як створити тригер:\n" +
-                   "1. Натисни «Додати дію» — через 5 сек зробиться скріншот монітора\n" +
-                   "2. Виділи мишею зону яку треба відслідковувати\n" +
-                   "3. Налаштуй яскравість/контраст для кращого розпізнавання\n" +
-                   "4. Вибери дію: натиснути клавішу або грати звук кожні X сек\n" +
-                   "5. Вкажи хоткей (F1–F12) для вмикання/вимикання\n" +
-                   "6. Збережи — тригер з'явиться як окремий модуль у меню",
+            Text = "ІНСТРУКЦІЯ\n" + info.Instruction,
             Foreground   = textDim,
-            FontSize     = 12,
+            FontSize     = 13,
             TextWrapping = TextWrapping.Wrap,
             Margin       = new Thickness(0, 0, 0, 16),
         };

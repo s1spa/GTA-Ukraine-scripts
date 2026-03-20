@@ -8,6 +8,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using ScriptedWpf.Core;
+using ScriptedWpf.Models;
 
 namespace ScriptedWpf.Cogs.Cda;
 
@@ -92,6 +93,7 @@ public sealed class CdaModule : IModule
 
     FrameworkElement BuildSettingsPanel()
     {
+        var info    = ModuleInfo.Load("cda");
         var textSec = (Brush)Application.Current.Resources["TextSecondaryBrush"];
         var textDim = (Brush)Application.Current.Resources["TextDimBrush"];
 
@@ -120,14 +122,14 @@ public sealed class CdaModule : IModule
 
         manualPanel.Children.Add(new TextBlock
         {
-            Text         = "Виділіть область екрану де з'являється код — програма буде автоматично його зчитувати і вводити.",
+            Text         = info.Hint("manualZone"),
             Foreground   = textDim,
-            FontSize     = 11,
+            FontSize     = 13,
             TextWrapping = TextWrapping.Wrap,
             Margin       = new Thickness(0, 0, 0, 8),
         });
 
-        var mZoneLbl = new TextBlock { Foreground = textDim, FontSize = 11, Margin = new Thickness(0, 0, 0, 4) };
+        var mZoneLbl = new TextBlock { Foreground = textDim, FontSize = 13, Margin = new Thickness(0, 0, 0, 4) };
         void RefreshManualZone() =>
             mZoneLbl.Text = (_cfg.X > 0 && _cfg.Width > 0)
                 ? $"Зона коду: ({_cfg.X}, {_cfg.Y}) → ({_cfg.X + _cfg.Width}, {_cfg.Y + _cfg.Height})"
@@ -239,14 +241,14 @@ public sealed class CdaModule : IModule
         // Зона коду (резервна)
         autoPanel.Children.Add(new TextBlock
         {
-            Text         = "Зона коду визначається автоматично. Якщо авто-пошук не спрацьовує — виділіть зону вручну як резервну.",
+            Text         = info.Hint("autoZone"),
             Foreground   = textDim,
-            FontSize     = 11,
+            FontSize     = 13,
             TextWrapping = TextWrapping.Wrap,
             Margin       = new Thickness(0, 8, 0, 8),
         });
 
-        var aZoneLbl = new TextBlock { Foreground = textDim, FontSize = 11, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 4) };
+        var aZoneLbl = new TextBlock { Foreground = textDim, FontSize = 13, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 4) };
         void RefreshAutoZone() =>
             aZoneLbl.Text = (_cfg.X > 0 && _cfg.Width > 0)
                 ? $"Зона коду: ({_cfg.X}, {_cfg.Y}) → ({_cfg.X + _cfg.Width}, {_cfg.Y + _cfg.Height})"

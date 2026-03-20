@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using ScriptedWpf.Core;
+using ScriptedWpf.Models;
 
 namespace ScriptedWpf.Cogs.Himlab;
 
@@ -187,6 +188,7 @@ public sealed class HimlabModule : IModule
     // ── Settings View ─────────────────────────────────────────────────────────
     FrameworkElement BuildSettings()
     {
+        var info     = ModuleInfo.Load("himlab");
         var accent   = (Brush)Application.Current.Resources["AccentBrush"];
         var textSec  = (Brush)Application.Current.Resources["TextSecondaryBrush"];
         var textDim  = (Brush)Application.Current.Resources["TextDimBrush"];
@@ -202,12 +204,8 @@ public sealed class HimlabModule : IModule
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var instrBlock = new TextBlock
         {
-            Text = "ІНСТРУКЦІЯ\n" +
-                   "1. Один раз відскануй всі 4 літери (W, A, S, D) — секція «Шаблони» нижче\n" +
-                   "2. Натисни F9 або кнопку «Увімкнути» — модуль запрацює у фоні\n" +
-                   "3. Коли в грі з'явиться капча — модуль сам її розпізнає і пройде\n" +
-                   "4. F9 повторно — зупинити",
-            Foreground = textDim, FontSize = 11,
+            Text = "ІНСТРУКЦІЯ\n" + info.Instruction,
+            Foreground = textDim, FontSize = 13,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 12)
         };
@@ -217,16 +215,27 @@ public sealed class HimlabModule : IModule
 
         void AddRow(string label, FrameworkElement input, string? hint = null)
         {
-            grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(hint != null ? 46 : 36) });
-            var stack = new StackPanel { Orientation = Orientation.Vertical, VerticalAlignment = VerticalAlignment.Center };
-            stack.Children.Add(new TextBlock { Text = label, Foreground = textSec });
-            if (hint != null)
-                stack.Children.Add(new TextBlock { Text = hint, Foreground = textDim, FontSize = 10 });
-            Grid.SetRow(stack, row); Grid.SetColumn(stack, 0);
+            grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(36) });
+            var lbl = new TextBlock { Text = label, Foreground = textSec, VerticalAlignment = VerticalAlignment.Center };
+            Grid.SetRow(lbl, row); Grid.SetColumn(lbl, 0);
             input.VerticalAlignment = VerticalAlignment.Center;
             Grid.SetRow(input, row); Grid.SetColumn(input, 1);
-            grid.Children.Add(stack); grid.Children.Add(input);
+            grid.Children.Add(lbl); grid.Children.Add(input);
             row++;
+
+            if (hint != null)
+            {
+                grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                var hintBlock = new TextBlock
+                {
+                    Text = hint, Foreground = textDim, FontSize = 13,
+                    TextWrapping = TextWrapping.Wrap,
+                    Margin = new Thickness(0, 0, 0, 6),
+                };
+                Grid.SetRow(hintBlock, row); Grid.SetColumnSpan(hintBlock, 2);
+                grid.Children.Add(hintBlock);
+                row++;
+            }
         }
 
         // Monitor
@@ -281,8 +290,8 @@ public sealed class HimlabModule : IModule
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var hint = new TextBlock
         {
-            Text = "Активуй капчу в грі, потім скануй кожну літеру окремо: коли на екрані W — натисни [W] Захопити, коли S — [S] Захопити і т.д. Після того як всі 4 літери відскановані — можна запускати.",
-            Foreground = textDim, FontSize = 10,
+            Text = info.Hint("templatesHint"),
+            Foreground = textDim, FontSize = 13,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 10),
         };

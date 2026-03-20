@@ -199,7 +199,7 @@ public sealed class TriggerActionModule : IModule
                    $"Дія: {(Data.Action == "sound" ? $"Звук кожні {Data.SoundIntervalSec}с" : $"Клавіша [{Data.ActionKey}]")}  |  " +
                    $"Поріг: {Data.MatchThreshold:P0}  |  Хоткей: {Data.Hotkey}",
             Foreground   = textDim,
-            FontSize     = 11,
+            FontSize     = 13,
             TextWrapping = TextWrapping.Wrap,
             Margin       = new Thickness(0, 0, 0, 12),
         };
@@ -248,7 +248,7 @@ public sealed class TriggerActionModule : IModule
                 extrasPanel.Children.Add(new TextBlock
                 {
                     Text = $"Додаткові фото ({Data.ExtraImagePaths.Count}):",
-                    Foreground = textDim, FontSize = 11,
+                    Foreground = textDim, FontSize = 13,
                     Margin = new Thickness(0, 0, 0, 4),
                 });
 
@@ -289,7 +289,7 @@ public sealed class TriggerActionModule : IModule
                 extrasPanel.Children.Add(new TextBlock
                 {
                     Text = "ПКМ по фото — видалити",
-                    Foreground = textDim, FontSize = 10,
+                    Foreground = textDim, FontSize = 13,
                     Margin = new Thickness(0, 0, 0, 4),
                 });
             }
@@ -306,7 +306,7 @@ public sealed class TriggerActionModule : IModule
                 HorizontalAlignment = HorizontalAlignment.Left,
                 FontSize = 11,
             };
-            var addExtraStatus = new TextBlock { Text = "", Foreground = textDim, FontSize = 11, Margin = new Thickness(0, 2, 0, 0) };
+            var addExtraStatus = new TextBlock { Text = "", Foreground = textDim, FontSize = 13, Margin = new Thickness(0, 2, 0, 0) };
 
             addExtraBtn.Click += (_, _) =>
             {

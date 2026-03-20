@@ -11,6 +11,7 @@ using WpfBrush  = System.Windows.Media.Brush;
 using WpfBrushes = System.Windows.Media.Brushes;
 using ScriptedWpf.Core;
 using ScriptedWpf.Cogs.Cda;
+using ScriptedWpf.Models;
 
 namespace ScriptedWpf.Cogs.Wires;
 
@@ -76,17 +77,13 @@ public sealed class WiresModule : IModule
         var textDim = (WpfBrush)Application.Current.Resources["TextDimBrush"];
         var stack = new StackPanel { Orientation = Orientation.Vertical };
 
+        var info = ModuleInfo.Load("wires");
+
         // ── Інструкція ────────────────────────────────────────────────────────
         stack.Children.Add(new TextBlock
         {
-            Text = "ІНСТРУКЦІЯ\n" +
-                   "1. Увійди в міні-гру з проводами\n" +
-                   "2. Натисни «Калібрувати» — є 5 секунд щоб повернутись у гру\n" +
-                   "3. Намалюй прямокутник навколо зони проводів → Enter\n" +
-                   "4. Намалюй прямокутник навколо зони кілець → Enter\n" +
-                   "5. Клікай на пікселі кожного кольору (провід і кільце)\n" +
-                   "6. Збережи → F8 щоб запустити / зупинити",
-            Foreground = textDim, FontSize = 11,
+            Text = "ІНСТРУКЦІЯ\n" + info.Instruction,
+            Foreground = textDim, FontSize = 13,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 12)
         });
