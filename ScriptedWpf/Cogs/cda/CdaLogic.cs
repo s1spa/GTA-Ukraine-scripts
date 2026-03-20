@@ -404,12 +404,20 @@ static class OrderScanner
 
         // ── Price: ціна/km ────────────────────────────────────────────────────
         int price = 0;
-        string priceTxt = engPrice
-            .Replace(" ", "").Replace("O", "0").Replace("S", "5").Replace("s", "5");
-        int di = priceTxt.IndexOf('$');
-        if (di >= 0 && di < priceTxt.Length - 1) priceTxt = priceTxt[(di + 1)..];
-        var pm = Regex.Match(priceTxt, @"\d+");
-        if (pm.Success) int.TryParse(pm.Value, out price);
+        // "$3 728/km" — Tesseract reads "$" as "5", giving "53 728/km".
+        // Pattern "(\d) (\d{3})(?=/km)" anchors to the thousands-separator format and
+        // naturally skips the misread prefix digit: in "53 728" it matches "3 728".
+        var kmMatch = Regex.Match(engPrice, @"(\d) (\d{3})(?=/km)", RegexOptions.IgnoreCase);
+        if (kmMatch.Success)
+        {
+            int.TryParse(kmMatch.Groups[1].Value + kmMatch.Groups[2].Value, out price);
+        }
+        else
+        {
+            // Fallback for prices without thousands separator (e.g. "3728/km")
+            var kmFallback = Regex.Match(engPrice, @"(\d{3,5})/km", RegexOptions.IgnoreCase);
+            if (kmFallback.Success) int.TryParse(kmFallback.Groups[1].Value, out price);
+        }
 
         // ── Cyrillic: тип вантажу ─────────────────────────────────────────────
         ukr = ukr.ToLowerInvariant();
