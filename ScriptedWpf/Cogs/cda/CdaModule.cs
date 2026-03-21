@@ -320,10 +320,74 @@ public sealed class CdaModule : IModule
         aNotifCb.Checked   += (_, _) => { _cfg.ShowNotifications = true;  _cfg.Save(); };
         aNotifCb.Unchecked += (_, _) => { _cfg.ShowNotifications = false; _cfg.Save(); };
 
+        // ── Звукове сповіщення ────────────────────────────────────────────────
+        var soundCb = new CheckBox { Content = "Звукове сповіщення при взятті замовлення", IsChecked = _cfg.SoundEnabled, Foreground = textSec, Margin = new Thickness(0, 8, 0, 4) };
+
+        var soundPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4),
+            Visibility = _cfg.SoundEnabled ? Visibility.Visible : Visibility.Collapsed };
+
+        var builtIn = CdaSound.GetBuiltInFiles();
+        var soundCmb = new ComboBox { Width = 200, Height = 28, Margin = new Thickness(0, 0, 8, 0) };
+
+        // Заповнюємо вбудовані звуки
+        int selectedIdx = 0;
+        for (int i = 0; i < builtIn.Length; i++)
+        {
+            string fileName = System.IO.Path.GetFileNameWithoutExtension(builtIn[i]);
+            soundCmb.Items.Add(new ComboBoxItem { Content = fileName, Tag = System.IO.Path.GetFileName(builtIn[i]) });
+            if (System.IO.Path.GetFileName(builtIn[i]) == _cfg.SoundFile) selectedIdx = i;
+        }
+
+        // Якщо поточний файл — кастомний (абсолютний шлях)
+        if (System.IO.Path.IsPathRooted(_cfg.SoundFile) && System.IO.File.Exists(_cfg.SoundFile))
+        {
+            soundCmb.Items.Add(new ComboBoxItem { Content = System.IO.Path.GetFileNameWithoutExtension(_cfg.SoundFile), Tag = _cfg.SoundFile });
+            selectedIdx = soundCmb.Items.Count - 1;
+        }
+        soundCmb.SelectedIndex = selectedIdx;
+        soundCmb.SelectionChanged += (_, _) =>
+        {
+            if (soundCmb.SelectedItem is ComboBoxItem item)
+            { _cfg.SoundFile = (string)item.Tag; _cfg.Save(); }
+        };
+
+        var soundBrowseBtn = new Button { Content = "Свій файл...", Padding = new Thickness(10, 4, 10, 4), Cursor = Cursors.Hand };
+        soundBrowseBtn.Click += (_, _) =>
+        {
+            var dlg = new System.Windows.Forms.OpenFileDialog
+            {
+                Title  = "Вибрати звук",
+                Filter = "Аудіо файли|*.mp3;*.wav;*.ogg|Всі файли|*.*",
+            };
+            if (dlg.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            {
+                string path = dlg.FileName;
+                // Перевіряємо чи вже є в списку
+                bool found = false;
+                foreach (ComboBoxItem it in soundCmb.Items)
+                    if ((string)it.Tag == path) { soundCmb.SelectedItem = it; found = true; break; }
+                if (!found)
+                {
+                    var newItem = new ComboBoxItem { Content = System.IO.Path.GetFileNameWithoutExtension(path), Tag = path };
+                    soundCmb.Items.Add(newItem);
+                    soundCmb.SelectedItem = newItem;
+                }
+                _cfg.SoundFile = path; _cfg.Save();
+            }
+        };
+
+        soundPanel.Children.Add(soundCmb);
+        soundPanel.Children.Add(soundBrowseBtn);
+
+        soundCb.Checked   += (_, _) => { _cfg.SoundEnabled = true;  _cfg.Save(); soundPanel.Visibility = Visibility.Visible; };
+        soundCb.Unchecked += (_, _) => { _cfg.SoundEnabled = false; _cfg.Save(); soundPanel.Visibility = Visibility.Collapsed; };
+
         autoPanel.Children.Add(aZoneLbl);
         autoPanel.Children.Add(aZoneBtn);
         autoPanel.Children.Add(aCountLbl);
         autoPanel.Children.Add(aNotifCb);
+        autoPanel.Children.Add(soundCb);
+        autoPanel.Children.Add(soundPanel);
         root.Children.Add(autoPanel);
 
         // ── Перемикання режиму ────────────────────────────────────────────────
@@ -438,6 +502,7 @@ public sealed class CdaModule : IModule
                             Thread.Sleep(100);
                             KeyInput.TypeCode(code);
                             _log("[CDA] Готово! 🚚");
+                            if (_cfg.SoundEnabled) CdaSound.Play(_cfg.SoundFile);
                             _state = BotState.Idle;
                             Notify("Готово!", $"Код {code} введено.");
                             StateChanged?.Invoke();

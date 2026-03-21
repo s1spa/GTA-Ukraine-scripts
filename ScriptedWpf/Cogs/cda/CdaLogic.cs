@@ -470,6 +470,36 @@ static class OrderScanner
     }
 }
 
+// ── Notification Sound ────────────────────────────────────────────────────────
+static class CdaSound
+{
+    static string SoundDir => Path.Combine(
+        AppDomain.CurrentDomain.BaseDirectory, "Cogs", "cda", "notification_sound");
+
+    public static string[] GetBuiltInFiles()
+        => Directory.Exists(SoundDir)
+            ? Directory.GetFiles(SoundDir, "*.mp3")
+            : Array.Empty<string>();
+
+    public static void Play(string? fileNameOrPath)
+    {
+        if (string.IsNullOrEmpty(fileNameOrPath)) return;
+        string path = Path.IsPathRooted(fileNameOrPath)
+            ? fileNameOrPath
+            : Path.Combine(SoundDir, fileNameOrPath);
+        if (!File.Exists(path)) return;
+
+        string uriPath = path;
+        System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
+        {
+            var player = new System.Windows.Media.MediaPlayer();
+            player.Open(new Uri(uriPath));
+            player.MediaEnded += (_, _) => player.Close();
+            player.Play();
+        });
+    }
+}
+
 // ── Keyboard Input ────────────────────────────────────────────────────────────
 static class KeyInput
 {

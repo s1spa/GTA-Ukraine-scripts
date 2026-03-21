@@ -18,6 +18,8 @@ public class CdaConfig
     [JsonPropertyName("minPrice")]          public int    MinPrice          { get; set; } = 1000;
     [JsonPropertyName("maxTon")]            public double MaxTon            { get; set; } = 5.0;
     [JsonPropertyName("showNotifications")] public bool   ShowNotifications { get; set; } = true;
+    [JsonPropertyName("soundEnabled")]       public bool   SoundEnabled       { get; set; } = true;
+    [JsonPropertyName("soundFile")]          public string SoundFile          { get; set; } = "notification_1.mp3";
     [JsonPropertyName("types")]
     public List<string> Types { get; set; } = new()
     {
