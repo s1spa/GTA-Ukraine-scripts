@@ -429,6 +429,7 @@ static class OrderScanner
             ukr.Contains("авто")    || ukr.Contains("обслуг")  || ukr.Contains("запчаст")         ? "Автозапчастини":
             ukr.Contains("різн")    || ukr.Contains("світ")    || ukr.Contains("мобіл")           ? "Різне"         :
             ukr.Contains("інш")     || ukr.Contains("спорядж") || ukr.Contains("тактичн")         ? "Інше"          :
+            ukr.Contains("нелег")   || ukr.Contains("заборон")  || ukr.Contains("контраб")         ? "Нелегальне"    :
             "Невідомо";
 
         return (price, ton, lvl, type);

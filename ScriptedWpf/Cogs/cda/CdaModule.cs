@@ -137,14 +137,39 @@ public sealed class CdaModule : IModule
 
         var mZoneBtn = new Button
         {
-            Content = "Виділити зону коду", Padding = new Thickness(12, 5, 12, 5),
-            HorizontalAlignment = HorizontalAlignment.Left, Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 0, 10),
+            Content = "Виділити зону коду (3 с)", Padding = new Thickness(12, 5, 12, 5),
+            HorizontalAlignment = HorizontalAlignment.Left, Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 0, 4),
         };
-        mZoneBtn.Click += (_, _) => OpenZoneSelector(z =>
+        var mCountLbl = new TextBlock { Foreground = textDim, FontSize = 13, Margin = new Thickness(0, 0, 0, 6), Visibility = Visibility.Collapsed };
+        mZoneBtn.Click += (_, _) =>
         {
-            _codeZone = z; _cfg.X = z.X; _cfg.Y = z.Y; _cfg.Width = z.Width; _cfg.Height = z.Height; _cfg.Save();
-            Application.Current.Dispatcher.Invoke(RefreshManualZone);
-        });
+            mZoneBtn.IsEnabled   = false;
+            mCountLbl.Visibility = Visibility.Visible;
+            new Thread(() =>
+            {
+                for (int sec = 3; sec >= 1; sec--)
+                {
+                    int s = sec;
+                    Application.Current.Dispatcher.Invoke(() => mCountLbl.Text = $"Повернись у гру... {s}");
+                    Thread.Sleep(1000);
+                }
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    mCountLbl.Visibility = Visibility.Collapsed;
+                    mZoneBtn.IsEnabled   = true;
+                    OpenZoneSelector(z =>
+                    {
+                        _codeZone = z; _cfg.X = z.X; _cfg.Y = z.Y; _cfg.Width = z.Width; _cfg.Height = z.Height; _cfg.Save();
+                        Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            RefreshManualZone();
+                            mCountLbl.Text       = $"Збережено: ({z.X}, {z.Y}) {z.Width}×{z.Height}";
+                            mCountLbl.Visibility = Visibility.Visible;
+                        });
+                    });
+                });
+            }) { IsBackground = true }.Start();
+        };
 
         var turboCb = new CheckBox { Content = "Turbo-режим (без затримок між цифрами)", IsChecked = _cfg.Turbo, Foreground = textSec, Margin = new Thickness(0, 0, 0, 6) };
         turboCb.Checked   += (_, _) => { _cfg.Turbo = true;  _cfg.Save(); };
@@ -156,6 +181,7 @@ public sealed class CdaModule : IModule
 
         manualPanel.Children.Add(mZoneLbl);
         manualPanel.Children.Add(mZoneBtn);
+        manualPanel.Children.Add(mCountLbl);
         manualPanel.Children.Add(turboCb);
         manualPanel.Children.Add(mNotifCb);
         root.Children.Add(manualPanel);
@@ -226,7 +252,7 @@ public sealed class CdaModule : IModule
         // Типи вантажів
         autoPanel.Children.Add(new TextBlock { Text = "Типи вантажів:", Foreground = textSec, Margin = new Thickness(0, 4, 0, 4) });
         var wrap = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 12) };
-        string[] allTypes = { "Фармацевтика", "Одяг", "Продукти", "Різне", "Інше", "Автозапчастини", "Нафта" };
+        string[] allTypes = { "Фармацевтика", "Одяг", "Продукти", "Різне", "Інше", "Автозапчастини", "Нафта", "Нелегальне" };
         foreach (var t in allTypes)
         {
             string cap = t;
@@ -256,14 +282,39 @@ public sealed class CdaModule : IModule
 
         var aZoneBtn = new Button
         {
-            Content = "Виділити зону коду (резервна)", Padding = new Thickness(12, 5, 12, 5),
-            HorizontalAlignment = HorizontalAlignment.Left, Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 0, 12),
+            Content = "Виділити зону коду (резервна, 3 с)", Padding = new Thickness(12, 5, 12, 5),
+            HorizontalAlignment = HorizontalAlignment.Left, Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 0, 4),
         };
-        aZoneBtn.Click += (_, _) => OpenZoneSelector(z =>
+        var aCountLbl = new TextBlock { Foreground = textDim, FontSize = 13, Margin = new Thickness(0, 0, 0, 8), Visibility = Visibility.Collapsed };
+        aZoneBtn.Click += (_, _) =>
         {
-            _codeZone = z; _cfg.X = z.X; _cfg.Y = z.Y; _cfg.Width = z.Width; _cfg.Height = z.Height; _cfg.Save();
-            Application.Current.Dispatcher.Invoke(RefreshAutoZone);
-        });
+            aZoneBtn.IsEnabled   = false;
+            aCountLbl.Visibility = Visibility.Visible;
+            new Thread(() =>
+            {
+                for (int sec = 3; sec >= 1; sec--)
+                {
+                    int s = sec;
+                    Application.Current.Dispatcher.Invoke(() => aCountLbl.Text = $"Повернись у гру... {s}");
+                    Thread.Sleep(1000);
+                }
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    aCountLbl.Visibility = Visibility.Collapsed;
+                    aZoneBtn.IsEnabled   = true;
+                    OpenZoneSelector(z =>
+                    {
+                        _codeZone = z; _cfg.X = z.X; _cfg.Y = z.Y; _cfg.Width = z.Width; _cfg.Height = z.Height; _cfg.Save();
+                        Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            RefreshAutoZone();
+                            aCountLbl.Text       = $"Збережено: ({z.X}, {z.Y}) {z.Width}×{z.Height}";
+                            aCountLbl.Visibility = Visibility.Visible;
+                        });
+                    });
+                });
+            }) { IsBackground = true }.Start();
+        };
 
         var aNotifCb = new CheckBox { Content = "Показувати сповіщення", IsChecked = _cfg.ShowNotifications, Foreground = textSec };
         aNotifCb.Checked   += (_, _) => { _cfg.ShowNotifications = true;  _cfg.Save(); };
@@ -271,6 +322,7 @@ public sealed class CdaModule : IModule
 
         autoPanel.Children.Add(aZoneLbl);
         autoPanel.Children.Add(aZoneBtn);
+        autoPanel.Children.Add(aCountLbl);
         autoPanel.Children.Add(aNotifCb);
         root.Children.Add(autoPanel);
 
@@ -402,9 +454,12 @@ public sealed class CdaModule : IModule
         }
         catch (Exception ex)
         {
-            _log($"[CDA] ❌ {ex.Message}");
+            _log($"[CDA] ❌ {ex.GetType().Name}: {ex.Message}");
             _state = BotState.Idle;
             StateChanged?.Invoke();
+            Application.Current.Dispatcher.Invoke(() =>
+                MessageBox.Show($"{ex.GetType().Name}: {ex.Message}\n\n{ex.StackTrace}",
+                    "CDA — Помилка", MessageBoxButton.OK, MessageBoxImage.Error));
         }
     }
 
@@ -461,9 +516,12 @@ public sealed class CdaModule : IModule
         }
         catch (Exception ex)
         {
-            _log($"[CDA] ❌ {ex.Message}");
+            _log($"[CDA] ❌ {ex.GetType().Name}: {ex.Message}");
             _state = BotState.Idle;
             StateChanged?.Invoke();
+            Application.Current.Dispatcher.Invoke(() =>
+                MessageBox.Show($"{ex.GetType().Name}: {ex.Message}\n\n{ex.StackTrace}",
+                    "CDA — Помилка", MessageBoxButton.OK, MessageBoxImage.Error));
         }
     }
 

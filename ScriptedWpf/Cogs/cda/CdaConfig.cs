@@ -21,7 +21,7 @@ public class CdaConfig
     [JsonPropertyName("types")]
     public List<string> Types { get; set; } = new()
     {
-        "Одяг", "Нафта", "Фармацевтика", "Різне", "Продукти", "Автозапчастини", "Інше"
+        "Одяг", "Нафта", "Фармацевтика", "Різне", "Продукти", "Автозапчастини", "Інше", "Нелегальне"
     };
 
     static readonly JsonSerializerOptions _opts = new() { WriteIndented = true };
