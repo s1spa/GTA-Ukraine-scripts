@@ -429,7 +429,8 @@ public sealed class CdaModule : IModule
                 if (!waitingForMenu)
                 {
                     var cards = OrderScanner.FindCards(_cfg.MonitorIndex,
-                        isCancelled: () => _state != BotState.AutoPilot);
+                        isCancelled: () => _state != BotState.AutoPilot,
+                        log: _log);
 
                     if (_state != BotState.AutoPilot) break;
 

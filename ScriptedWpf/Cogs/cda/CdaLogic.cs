@@ -309,12 +309,13 @@ static class OrderScanner
     static readonly double[] ValidTons = { 0.5, 1.5, 3.0, 5.0 };
 
     /// <summary>Знаходить картки замовлень на екрані. isCancelled перевіряється між картками.</summary>
-    public static List<OrderCard> FindCards(int monitorIndex, Func<bool>? isCancelled = null)
+    public static List<OrderCard> FindCards(int monitorIndex, Func<bool>? isCancelled = null, Action<string>? log = null)
     {
         var screen  = WinOcr.GetMonitorBounds(monitorIndex);
         using var bmp = ScreenCapture.Capture(screen);
         var cards   = new List<OrderCard>();
         var anchors = FindGreenPriceAnchors(bmp);
+        log?.Invoke($"[CDA] DBG anchors={anchors.Count}: {string.Join(" | ", anchors.Select(a => $"({a.X},{a.Y})"))}");
         if (anchors.Count == 0) return cards;
 
         foreach (var anchor in anchors)
@@ -354,15 +355,16 @@ static class OrderScanner
     // Результат: 3T послідовно → ~2T з overlap = ~33% швидше на картку
     static (int price, double ton, int lvl, string type) ReadCard(SysBitmap bmp, SysPoint anchor)
     {
-        int x0 = Math.Max(0, anchor.X - 10);
+        // Badge zone — зміщуємо вліво на 150px від якоря, бо значки [3T][1LVL][тип]
+        // розміщуються лівіше від тексту основної ціни (особливо для лівої колонки)
+        int bx0 = Math.Max(0, anchor.X - 150);
+        int by0 = Math.Max(0, anchor.Y - 120);
+        var br  = new SysRect(bx0, by0, Math.Min(500, bmp.Width - bx0), 105);
 
-        // Badge zone — оригінальні межі ReadBadge
-        int by0 = Math.Max(0, anchor.Y - 100);
-        var br  = new SysRect(x0, by0, Math.Min(380, bmp.Width - x0), 85);
-
-        // Price zone — оригінальні межі ReadPrice
-        int py0 = anchor.Y + 25;
-        var pr  = new SysRect(x0, py0, Math.Min(280, bmp.Width - x0), 50);
+        // Price zone — читаємо рядок ≈ $/km; x0 лишається близько до якоря (ціна там)
+        int x0  = Math.Max(0, anchor.X - 10);
+        int py0 = anchor.Y + 20;
+        var pr  = new SysRect(x0, py0, Math.Min(320, bmp.Width - x0), 65);
 
         if (br.Width < 50 || py0 + 50 > bmp.Height || pr.Width < 30)
             return (0, 0, 1, "Невідомо");
@@ -379,7 +381,9 @@ static class OrderScanner
 
         // ── Badge: тоннаж + рівень ────────────────────────────────────────────
         string eng = badge
-            .Replace("S", "5").Replace("s", "5").Replace("O", "0").Replace("o", "0")
+            .Replace("S", "5").Replace("s", "5")
+            .Replace("O", "0").Replace("o", "0").Replace("О", "0") // Latin + Cyrillic O
+            .Replace("I", "1").Replace("l", "1")
             .ToUpperInvariant();
 
         double ton = 0;
@@ -390,9 +394,33 @@ static class OrderScanner
         {
             string raw = tm.Groups[1].Value.Replace(',', '.');
             double.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out ton);
-            if (!ValidTons.Contains(ton) && raw.Length >= 2)
+
+            // "05"→"0.5", "15"→"1.5": OCR злив цифри без десяткового роздільника.
+            // Перевіряємо ДО загального fallback, бо "05"→5.0 є ValidTon і не потрапляє в нього.
+            string rawNoSep = tm.Groups[1].Value.Replace(",", "").Replace(".", "");
+            if (rawNoSep.Length == 2 && (rawNoSep[0] == '0' || rawNoSep[0] == '1'))
+            {
+                string cand = rawNoSep[0] + "." + rawNoSep[1];
+                if (double.TryParse(cand, NumberStyles.Any, CultureInfo.InvariantCulture, out double c)
+                    && ValidTons.Contains(c))
+                    ton = c;
+            }
+            else if (!ValidTons.Contains(ton) && raw.Length >= 2)
             {
                 string cand = raw[..^1] + "." + raw[^1..];
+                if (double.TryParse(cand, NumberStyles.Any, CultureInfo.InvariantCulture, out double c)
+                    && ValidTons.Contains(c))
+                    ton = c;
+            }
+        }
+
+        // Fallback: OCR вставив пробіл замість коми — "0 5 T" або "1 5 T"
+        if (!ValidTons.Contains(ton))
+        {
+            var tm2 = Regex.Match(eng, @"([01])\s+(\d)\s*[TТ]");
+            if (tm2.Success)
+            {
+                string cand = tm2.Groups[1].Value + "." + tm2.Groups[2].Value;
                 if (double.TryParse(cand, NumberStyles.Any, CultureInfo.InvariantCulture, out double c)
                     && ValidTons.Contains(c))
                     ton = c;
@@ -404,10 +432,13 @@ static class OrderScanner
 
         // ── Price: ціна/km ────────────────────────────────────────────────────
         int price = 0;
+        // Нормалізуємо: Tesseract іноді вставляє \n між цифрою і рештою числа
+        // (напр. "4\n890/km"), тому склеюємо рядки пробілом.
+        string priceNorm = engPrice.Replace('\r', ' ').Replace('\n', ' ');
         // "$3 728/km" — Tesseract reads "$" as "5", giving "53 728/km".
         // Pattern "(\d) (\d{3})(?=/km)" anchors to the thousands-separator format and
         // naturally skips the misread prefix digit: in "53 728" it matches "3 728".
-        var kmMatch = Regex.Match(engPrice, @"(\d) (\d{3})(?=/km)", RegexOptions.IgnoreCase);
+        var kmMatch = Regex.Match(priceNorm, @"(\d) (\d{3})(?=/km)", RegexOptions.IgnoreCase);
         if (kmMatch.Success)
         {
             int.TryParse(kmMatch.Groups[1].Value + kmMatch.Groups[2].Value, out price);
@@ -415,7 +446,7 @@ static class OrderScanner
         else
         {
             // Fallback for prices without thousands separator (e.g. "3728/km")
-            var kmFallback = Regex.Match(engPrice, @"(\d{3,5})/km", RegexOptions.IgnoreCase);
+            var kmFallback = Regex.Match(priceNorm, @"(\d{3,5})/km", RegexOptions.IgnoreCase);
             if (kmFallback.Success) int.TryParse(kmFallback.Groups[1].Value, out price);
         }
 
@@ -453,12 +484,14 @@ static class OrderScanner
                     if (r >= 205 && r <= 240 && g >= 220 && g <= 250 && b >= 115 && b <= 148)
                     {
                         // Зворотна ітерація + early break по Y (анкори відсортовані зверху-вниз)
+                        // Поріг 280px: LVL бонус "+$XXX" на тій же картці (~230px від основної ціни)
+                        // дедублікується, а сусідні картки (~330px) залишаються окремими.
                         bool isNew = true;
                         for (int ai = anchors.Count - 1; ai >= 0; ai--)
                         {
                             var ap = anchors[ai];
                             if (y - ap.Y > 150) break; // всі попередні ще далі по Y
-                            if (Math.Abs(ap.X - x) < 200) { isNew = false; break; }
+                            if (Math.Abs(ap.X - x) < 280) { isNew = false; break; }
                         }
                         if (isNew) anchors.Add(new SysPoint(x, y));
                     }
